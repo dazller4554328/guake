@@ -182,6 +182,14 @@ class DbusManager(dbus.service.Object):
     def show_prefs(self):
         self.guake.show_prefs()
 
+    @dbus.service.method(DBUS_NAME, in_signature="s", out_signature="b")
+    def connect_server(self, name):
+        return self.guake.connect_to_server_by_name(name)
+
+    @dbus.service.method(DBUS_NAME)
+    def show_servers(self):
+        self.guake.show_servers()
+
     @dbus.service.method(DBUS_NAME)
     def quit(self):
         self.guake.quit()

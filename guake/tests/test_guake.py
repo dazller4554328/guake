@@ -241,3 +241,67 @@ def test_guake_compute_tab_title(mocker, g, fs):
     # Avoid loading the guake.yml
     mocker.patch.object(g.settings.general, "get_boolean", return_value=False)
     assert g.compute_tab_title(vte) == "Terminal"
+
+
+# Saved servers
+
+
+def test_connect_to_server_opens_tab_named_after_server(g):
+    from guake.servers import Server
+
+    server = Server(name="test-box", host="127.0.0.1", port=1, user="nobody")
+    nb = g.get_notebook()
+    before = nb.get_n_pages()
+
+    g.connect_to_server(server)
+
+    assert nb.get_n_pages() == before + 1
+    assert nb.get_tab_text_index(nb.get_current_page()) == "test-box"
+    assert nb.get_current_terminal().server_id == server.id
+
+
+def test_connect_to_server_by_name_reports_unknown_server(g):
+    from guake.servers import Server
+
+    assert g.connect_to_server_by_name("nope") is False
+    g.servers.add(Server(name="box", host="127.0.0.1", port=1))
+    assert g.connect_to_server_by_name("BOX") is True
+
+
+def test_open_server_tab_reports_invalid_options_instead_of_failing_silently(g, mocker):
+    from guake.servers import Server
+
+    shown = mocker.patch.object(g, "show_server_error")
+    nb = g.get_notebook()
+    before = nb.get_n_pages()
+
+    assert g.open_server_tab(Server(name="bad", host="h", options="-o 'oops")) is None
+
+    assert nb.get_n_pages() == before
+    assert shown.called
+
+
+def test_server_tab_survives_save_and_restore(g):
+    from guake.servers import Server
+
+    server = g.servers.add(Server(name="test-box", host="127.0.0.1", port=1))[0]
+    nb = g.get_notebook()
+    g.connect_to_server(server)
+
+    g.save_tabs()
+    session = json.loads((Path("/foobar") / "session.json").read_text(encoding="utf-8"))
+    saved_ids = [
+        pane.get("server_id")
+        for frames in session["workspace"].values()
+        for tabs in frames
+        for tab in tabs
+        for pane in tab["panes"]
+    ]
+    assert server.id in saved_ids
+
+    g.restore_tabs()
+
+    labels = [nb.get_tab_text_index(i) for i in range(nb.get_n_pages())]
+    assert "test-box" in labels
+    restored = nb.get_terminals_for_page(labels.index("test-box"))[0]
+    assert restored.server_id == server.id

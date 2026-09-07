@@ -28,6 +28,7 @@ from guake.dialogs import PromptQuitDialog
 from guake.globals import PROMPT_ALWAYS
 from guake.globals import PROMPT_PROCESSES
 from guake.menus import mk_notebook_context_menu
+from guake.menus import mk_servers_menu
 from guake.prefs import PrefsDialog
 from guake.utils import HidePrevention
 from guake.utils import gdk_is_x11_display
@@ -107,6 +108,14 @@ class TerminalNotebook(Gtk.Notebook):
         )
         self.new_page_button.connect("clicked", self.on_new_tab)
 
+        self.servers_button = Gtk.Button(
+            image=Gtk.Image.new_from_icon_name("network-server-symbolic", Gtk.IconSize.MENU),
+            visible=True,
+        )
+        self.servers_button.set_tooltip_text(_("Servers"))
+        self.servers_button.connect("clicked", self.on_servers_clicked)
+        self.servers_menu = None
+
         self.tab_selection_button = Gtk.Button(
             image=Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.MENU),
             visible=True,
@@ -118,6 +127,7 @@ class TerminalNotebook(Gtk.Notebook):
         self.action_box = Gtk.Box(visible=True)
         self.action_box.pack_start(self.pin_button, 0, 0, 0)
         self.action_box.pack_start(self.new_page_button, 0, 0, 0)
+        self.action_box.pack_start(self.servers_button, 0, 0, 0)
         self.action_box.pack_start(self.tab_selection_button, 0, 0, 0)
         self.set_action_widget(self.action_box, Gtk.PackType.END)
 
@@ -160,6 +170,27 @@ class TerminalNotebook(Gtk.Notebook):
     @save_tabs_when_changed
     def on_new_tab(self, user_data):
         self.new_page_with_focus()
+
+    def on_servers_clicked(self, button):
+        self.show_servers_menu(button)
+
+    def show_servers_menu(self, widget=None):
+        """Pop up the saved servers menu, anchored to ``widget`` (the toolbar
+        button by default). Used by the button and the keyboard shortcut."""
+        widget = widget or self.servers_button
+        # Keep a reference on the instance, otherwise the menu is garbage
+        # collected while it is displayed.
+        self.servers_menu = mk_servers_menu(self.guake)
+        HidePrevention(self.guake.window).prevent()
+        self.servers_menu.connect("hide", MenuHideCallback(self.guake.window).on_hide)
+        try:
+            self.servers_menu.popup_at_widget(
+                widget, Gdk.Gravity.NORTH_WEST, Gdk.Gravity.SOUTH_WEST, None
+            )
+        except AttributeError:
+            # Gtk < 3.22
+            self.servers_menu.popup(None, None, None, None, 0, Gtk.get_current_event_time())
+        return True
 
     def on_tab_selection(self, user_data):
         """Construct the tab selection popover
@@ -366,12 +397,14 @@ class TerminalNotebook(Gtk.Notebook):
     def delete_page_current(self, kill=True, prompt=0):
         self.delete_page(self.get_current_page(), kill, prompt)
 
-    def new_page(self, directory=None, position=None, empty=False, open_tab_cwd=False):
+    def new_page(
+        self, directory=None, position=None, empty=False, open_tab_cwd=False, argv=None, envv=None
+    ):
         terminal_box = TerminalBox()
         if empty:
             terminal = None
         else:
-            terminal = self.terminal_spawn(directory, open_tab_cwd)
+            terminal = self.terminal_spawn(directory, open_tab_cwd, argv=argv, envv=envv)
             terminal_box.set_terminal(terminal)
         root_terminal_box = RootTerminalBox(self.guake, self)
         root_terminal_box.set_child(terminal_box)
@@ -411,7 +444,9 @@ class TerminalNotebook(Gtk.Notebook):
             else:
                 self.set_property("show-tabs", True)
 
-    def terminal_spawn(self, directory=None, open_tab_cwd=False):
+    def terminal_spawn(self, directory=None, open_tab_cwd=False, argv=None, envv=None):
+        """Create a terminal running ``argv`` (the shell by default) in
+        ``directory``. ``envv`` holds extra ``KEY=VALUE`` environment entries."""
         terminal = GuakeTerminal(self.guake)
         terminal.grab_focus()
         terminal.connect(
@@ -435,7 +470,7 @@ class TerminalNotebook(Gtk.Notebook):
             except BaseException:
                 pass
         log.info("Spawning new terminal at %s", directory)
-        terminal.spawn_sync_pid(directory)
+        terminal.spawn_sync_pid(directory, argv=argv, envv=envv)
         return terminal
 
     def on_terminal_activity(self, terminal):
@@ -491,9 +526,16 @@ class TerminalNotebook(Gtk.Notebook):
         position=None,
         empty=False,
         open_tab_cwd=False,
+        argv=None,
+        envv=None,
     ):
         box, page_num, terminal = self.new_page(
-            directory, position=position, empty=empty, open_tab_cwd=open_tab_cwd
+            directory,
+            position=position,
+            empty=empty,
+            open_tab_cwd=open_tab_cwd,
+            argv=argv,
+            envv=envv,
         )
         self.set_current_page(page_num)
         if not label:

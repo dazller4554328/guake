@@ -438,6 +438,11 @@
             <summary>Add a new tab in current directory.</summary>
             <description>Calls the function to add a new tab in guake window, in the same directory as the current tab.</description>
         </key>
+        <key name="open-servers" type="s">
+            <default>'&lt;Control&gt;&lt;Shift&gt;s'</default>
+            <summary>Open the saved servers menu.</summary>
+            <description>Pops up the list of saved SSH servers. Picking one opens a new tab connected to it.</description>
+        </key>
         <key name="close-tab" type="s">
             <default>'&lt;Control&gt;&lt;Shift&gt;w'</default>
             <summary>Closes the current tab.</summary>

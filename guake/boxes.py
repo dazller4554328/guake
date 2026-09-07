@@ -216,6 +216,7 @@ class RootTerminalBox(Gtk.Overlay, TerminalHolder):
                     "type": btype,
                     "directory": directory,
                     "custom_colors": box.terminal.get_custom_colors_dict(),
+                    "server_id": getattr(box.terminal, "server_id", None),
                 }
             )
 
@@ -270,8 +271,21 @@ class RootTerminalBox(Gtk.Overlay, TerminalHolder):
                 box.remove(term)
                 box.unset_terminal()
 
-            # Replace term in the TerminalBox
-            term = self.get_notebook().terminal_spawn(cur["directory"])
+            # Replace term in the TerminalBox. A pane that was connected to a
+            # saved server comes back as a server tab waiting to reconnect.
+            argv = envv = None
+            server = None
+            if cur.get("server_id") and self.guake:
+                server = self.guake.find_server_by_id(cur["server_id"])
+            if server is not None:
+                try:
+                    argv, envv = self.guake.server_launch(server, deferred=True)
+                except ValueError as e:
+                    log.error("Cannot restore server %s: %s", server.name, e)
+                    server = None
+            term = self.get_notebook().terminal_spawn(cur["directory"], argv=argv, envv=envv)
+            if server is not None:
+                term.server_id = server.id
             term.set_custom_colors_from_dict(cur.get("custom_colors", None))
             box.set_terminal(term)
             self.get_notebook().terminal_attached(term)

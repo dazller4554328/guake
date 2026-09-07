@@ -78,6 +78,13 @@ from guake.utils import RectCalculator
 from guake.utils import TabNameUtils
 from guake.utils import get_server_time
 from guake.utils import save_tabs_when_changed
+from guake import serversecrets
+from guake.serverdialog import ServersDialog
+from guake.servers import SERVERS_FILENAME
+from guake.servers import ServerStore
+from guake.servers import SSH_CONFIG_ID_PREFIX
+from guake.servers import build_launch
+from guake.servers import parse_ssh_config
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +127,9 @@ class Guake(SimpleGladeApp):
         if (
             "schema-version" not in self.settings.general.keys()
             or self.settings.general.get_string("schema-version") != guake_version()
+            # Keys added by this fork: a stale compiled schema would abort Guake
+            # on the first get_string() for them.
+            or "open-servers" not in self.settings.keybindingsLocal.keys()
         ):
             log.exception("Schema from old guake version detected, regenerating schema")
             try:
@@ -203,6 +213,9 @@ class Guake(SimpleGladeApp):
 
         # Start the file manager (only used by guake.yml so far).
         self.fm = FileManager()
+
+        # Saved SSH servers (Servers menu / toolbar button)
+        self.servers = ServerStore(self.get_xdg_config_directory() / SERVERS_FILENAME)
 
         # Workspace tracking
         self.notebook_manager = NotebookManager(
@@ -1017,6 +1030,11 @@ class Guake(SimpleGladeApp):
         self.add_tab(open_tab_cwd=True)
         return True
 
+    def accel_open_servers(self, *args):
+        """Callback to pop up the saved servers menu. Called by the accel key."""
+        self.get_notebook().show_servers_menu()
+        return True
+
     def accel_prev(self, *args):
         """Callback to go to the previous tab. Called by the accel key."""
         if self.get_notebook().get_current_page() == 0:
@@ -1275,6 +1293,111 @@ class Guake(SimpleGladeApp):
             directory, position=position, open_tab_cwd=open_tab_cwd
         )
 
+    @save_tabs_when_changed
+    def connect_to_server(self, server):
+        """Open a new tab running ssh to the given saved server."""
+        position = None
+        if self.settings.general.get_boolean("new-tab-after"):
+            position = 1 + self.get_notebook().get_current_page()
+        self.open_server_tab(server, position=position)
+
+    def open_server_tab(self, server, deferred=False, label=None, user_set=True, position=None):
+        """Spawn the ssh session for ``server`` in a new tab and return its
+        terminal, or None when the server cannot be launched.
+
+        ``deferred`` restores a tab without connecting right away (the tab
+        asks first); it is used by ``restore_tabs``.
+        """
+        try:
+            argv, envv = self.server_launch(server, deferred=deferred)
+        except ValueError as e:
+            log.error("Cannot connect to server %s: %s", server.name, e)
+            self.show_server_error(
+                _("Cannot connect to '{name}'.").format(name=server.name),
+                _("{error}\n\nFix the server in Servers > Manage servers...").format(error=e),
+            )
+            return None
+        log.info(
+            "%s server %s (%s)",
+            "Restoring" if deferred else "Connecting to",
+            server.name,
+            server.target,
+        )
+        _box, _page_num, terminal = self.get_notebook().new_page_with_focus(
+            None, label or server.name, user_set, position=position, argv=argv, envv=envv
+        )
+        terminal.server_id = server.id
+        if self.hidden and not deferred:
+            self.show()
+        return terminal
+
+    def server_launch(self, server, deferred=False):
+        """``(argv, envv)`` to spawn in a terminal for ``server``. Raises
+        ValueError when its settings cannot be turned into an ssh command."""
+        password = None
+        if server.use_password:
+            password = serversecrets.lookup_password(server.id)
+            if password is None:
+                log.warning("No password found in the keyring for server %s", server.name)
+        return build_launch(
+            server,
+            password,
+            closed_message=_("Connection to {name} closed (exit status {status})."),
+            reconnect_prompt=_("Press r then Enter to reconnect, or Enter to close this tab: "),
+            no_sshpass_message=_(
+                "[Guake] 'sshpass' is not installed, so the saved password cannot be "
+                "used. Enter it manually or install sshpass."
+            ),
+            deferred=deferred,
+            restored_message=_("Tab for {name} restored, not connected yet."),
+        )
+
+    def show_server_error(self, text, secondary):
+        """Modal error box on top of Guake (the window is kept from auto-hiding)."""
+        HidePrevention(self.window).prevent()
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            modal=True,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=text,
+        )
+        dialog.format_secondary_text(secondary)
+        dialog.run()
+        dialog.destroy()
+        HidePrevention(self.window).allow()
+
+    def find_server_by_id(self, server_id):
+        """A saved server, or a host from ~/.ssh/config, by id. None if unknown."""
+        if not server_id:
+            return None
+        server = self.servers.get(server_id)
+        if server is None and server_id.startswith(SSH_CONFIG_ID_PREFIX):
+            server = next((s for s in parse_ssh_config() if s.id == server_id), None)
+        return server
+
+    def server_for_restored_tab(self, tab):
+        """The server a saved session tab was connected to, when that tab was a
+        single terminal whose server still exists; otherwise None."""
+        panes = tab.get("panes") or []
+        if len(panes) != 1:
+            return None
+        return self.find_server_by_id(panes[0].get("server_id"))
+
+    def connect_to_server_by_name(self, name):
+        """Connect to the saved server called ``name``. Returns False when
+        there is no such server (used by the D-Bus / command line entry)."""
+        server = self.servers.find_by_name(name)
+        if server is None:
+            log.error("No saved server named %r", name)
+            return False
+        self.connect_to_server(server)
+        return True
+
+    def show_servers(self, *args, add_new=False):
+        """Open the saved servers manager dialog."""
+        ServersDialog(self, add_new=add_new).present_dialog()
+
     def find_tab(self, directory=None):
         log.debug("find")
         # TODO SEARCH
@@ -1513,7 +1636,15 @@ class Guake(SimpleGladeApp):
                 # NOTE: If frame implement in future, we will need to update this code
                 for tabs in frames:
                     for index, tab in enumerate(tabs):
-                        if tab.get("panes", False):
+                        server = self.server_for_restored_tab(tab)
+                        if server is not None:
+                            self.open_server_tab(
+                                server,
+                                deferred=True,
+                                label=tab["label"],
+                                user_set=tab["custom_label_set"],
+                            )
+                        elif tab.get("panes", False):
                             box, page_num, term = nb.new_page_with_focus(
                                 label=tab["label"], user_set=tab["custom_label_set"], empty=True
                             )

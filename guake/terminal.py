@@ -560,8 +560,8 @@ class GuakeTerminal(Vte.Terminal):
         except OSError:
             pass
 
-    def spawn_sync_pid(self, directory):
-
+    def default_shell_argv(self):
+        """The user's shell (or the one from the preferences), as argv."""
         argv = []
         user_shell = self.guake.settings.general.get_string("default-shell")
         if user_shell and os.path.exists(user_shell):
@@ -575,6 +575,17 @@ class GuakeTerminal(Vte.Terminal):
         login_shell = self.guake.settings.general.get_boolean("use-login-shell")
         if login_shell:
             argv.append("--login")
+        return argv
+
+    def spawn_sync_pid(self, directory, argv=None, envv=None):
+        """Spawn ``argv`` in this terminal, the user's shell when not given.
+
+        ``envv`` is a list of extra ``KEY=VALUE`` strings appended to the
+        inherited environment (used e.g. to hand a password to sshpass).
+        """
+        if argv is None:
+            argv = self.default_shell_argv()
+        environment = [*self.envv, *(envv or [])]
 
         log.debug('Spawn command: "%s"', " ".join(argv))
 
@@ -582,7 +593,7 @@ class GuakeTerminal(Vte.Terminal):
             Vte.PtyFlags.DEFAULT,
             directory,
             argv,
-            self.envv,
+            environment,
             GLib.SpawnFlags(Vte.SPAWN_NO_PARENT_ENVV),
             None,
             None,

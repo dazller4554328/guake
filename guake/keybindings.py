@@ -67,6 +67,7 @@ class Keybindings:
             ("new-tab", self.guake.accel_add),
             ("new-tab-home", self.guake.accel_add_home),
             ("new-tab-cwd", self.guake.accel_add_cwd),
+            ("open-servers", self.guake.accel_open_servers),
             ("close-tab", x),
             ("rename-current-tab", self.guake.accel_rename_current_tab),
             ("previous-tab", self.guake.accel_prev),

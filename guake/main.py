@@ -395,6 +395,23 @@ def main():
     )
 
     parser.add_argument(
+        "--server",
+        dest="server",
+        action="store",
+        default=None,
+        metavar="NAME",
+        help=_("Open a new tab connected to the saved server NAME (see the Servers menu)"),
+    )
+
+    parser.add_argument(
+        "--servers",
+        dest="show_servers",
+        action="store_true",
+        default=False,
+        help=_("Open the saved servers manager"),
+    )
+
+    parser.add_argument(
         "--support",
         dest="support",
         action="store_true",
@@ -635,6 +652,16 @@ def main():
 
     if options.rename_current_tab:
         remote_object.rename_current_tab(options.rename_current_tab)
+        only_show_hide = options.show
+
+    if options.server:
+        if not remote_object.connect_server(options.server):
+            sys.stderr.write(f"no saved server named {options.server!r}\n")
+            sys.exit(1)
+        only_show_hide = False
+
+    if options.show_servers:
+        remote_object.show_servers()
         only_show_hide = options.show
 
     if options.show_about:

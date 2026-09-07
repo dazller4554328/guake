@@ -1,0 +1,12 @@
+---
+features:
+  - |
+    Saved servers: Guake now has an SSH connection manager, similar to the one
+    in Tabby. Save servers (host, port, user name, private key, password kept
+    in the desktop keyring, jump host, extra ssh options, command to run after
+    login), group them, and open a tab logged into one with a single click
+    from the new tab bar button, the ``Servers`` submenu of the context menus,
+    or the ``<Control><Shift>s`` shortcut. Hosts declared in ``~/.ssh/config``
+    are listed too and can be imported. When a connection ends the tab stays
+    open, shows why, and offers to reconnect. New command line options
+    ``--server NAME`` and ``--servers``.

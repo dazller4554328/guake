@@ -122,3 +122,35 @@ Per-directory `.guake.yml` file
 If there is a file named `.guake.yml` in the current working directory of the shell associated with a tab, Guake will try to read the title from there. The current format is very simple and it will probably change in the future::
 
     title: "My Great Project"
+
+Saved servers
+=============
+
+Guake can remember the SSH servers you use, like the connection manager in
+Tabby. Open the list with the server button on the tab bar, the ``Servers``
+entry of the right-click menu, or ``<Control><Shift>s``, then click a server:
+a new tab opens and logs you in.
+
+Each saved server has a name, an optional group (shown as a submenu), a host,
+a port and a user name, plus optionally:
+
+- a private key (``ssh -i``),
+- a password, kept in your desktop keyring through libsecret and handed to
+  ``sshpass`` when connecting (it is never written to the servers file; both
+  ``gir1.2-secret-1`` and ``sshpass`` must be installed),
+- a jump host (``ssh -J``),
+- extra ssh options,
+- a command to run once logged in, for example ``tmux attach || tmux``.
+
+*Manage servers...* adds, edits, removes and imports servers. Hosts declared
+in ``~/.ssh/config`` are listed automatically, and *Import ~/.ssh/config*
+copies them into the saved list so they can be edited.
+
+When a connection ends the tab stays open, shows why, and offers to reconnect
+(press ``r`` then Enter) or close (Enter). Server tabs are part of the saved
+tab session too: after a Guake restart they come back, but wait for you to
+press ``r`` before connecting, so Guake never dials every server at startup.
+
+Servers are stored in ``~/.config/guake/servers.json``. From the command line,
+``guake --server NAME`` opens a tab connected to the saved server ``NAME`` and
+``guake --servers`` opens the manager.
