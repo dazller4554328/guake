@@ -7,12 +7,17 @@ import time
 
 from pathlib import Path
 
+import gi
 import pytest
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
 
 import guake.guake_app
 
 from guake.common import pixmapfile
 from guake.guake_app import Guake
+from guake.servers import Server
 
 
 @pytest.fixture
@@ -305,3 +310,76 @@ def test_server_tab_survives_save_and_restore(g):
     assert "test-box" in labels
     restored = nb.get_terminals_for_page(labels.index("test-box"))[0]
     assert restored.server_id == server.id
+
+
+# SFTP panel
+
+
+class StubSftpPanel(Gtk.Box):
+    """Stands in for the real panel: no sftp process, just the wiring."""
+
+    def __init__(self, window, server_name, session_factory, on_close):
+        super().__init__()
+        self.server_name = server_name
+        self.session_factory = session_factory
+        self.on_close = on_close
+        self.view = Gtk.TreeView()
+        self.add(self.view)
+
+    def close(self):
+        self.on_close(self)
+
+
+@pytest.fixture
+def stub_panel(mocker):
+    mocker.patch("guake.boxes.SftpPanel", StubSftpPanel)
+    return StubSftpPanel
+
+
+def test_open_sftp_panel_places_panel_next_to_terminal(g, stub_panel):
+    server = Server(name="web", host="10.0.0.5", user="root", id="web")
+    g.servers.add(server)
+    root = g.current_root_box()
+    assert root.sftp_panel is None
+    assert root.paned.get_child1() is root.get_child()
+
+    panel = g.open_sftp_panel(server)
+    assert isinstance(panel, stub_panel)
+    assert root.sftp_panel is panel
+    assert root.paned.get_child2() is panel
+    assert panel.server_id == "web"
+    assert panel.server_name == "web"
+
+    # Opening the same server again keeps the panel; closing removes it.
+    assert g.open_sftp_panel(server) is panel
+    panel.close()
+    assert root.sftp_panel is None
+    assert root.paned.get_child2() is None
+
+
+def test_toggle_sftp_panel_needs_a_server_tab(g, stub_panel):
+    assert g.toggle_sftp_panel() is False
+    server = Server(name="web", host="10.0.0.5", id="web")
+    g.servers.add(server)
+    g.get_notebook().get_current_terminal().server_id = "web"
+    assert g.toggle_sftp_panel() is True
+    assert g.current_root_box().sftp_panel is not None
+    assert g.toggle_sftp_panel() is True
+    assert g.current_root_box().sftp_panel is None
+
+
+def test_open_sftp_panel_rejects_broken_options(g, stub_panel, mocker):
+    mocker.patch.object(g, "show_server_error")
+    server = Server(name="bad", host="h", options='-o "unterminated')
+    assert g.open_sftp_panel(server) is None
+    assert g.show_server_error.call_count == 1
+    assert g.current_root_box().sftp_panel is None
+
+
+def test_sftp_session_factory_uses_saved_password(g, mocker):
+    mocker.patch("guake.guake_app.serversecrets.lookup_password", return_value="pw")
+    server = Server(name="web", host="10.0.0.5", user="root", port=2200, use_password=True)
+    session = g.sftp_session_factory(server)(lambda text, secret: None)
+    assert session.argv == ["sftp", "-P", "2200", "root@10.0.0.5"]
+    assert session._password == "pw"
+    assert not session.is_alive

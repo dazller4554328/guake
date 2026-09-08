@@ -80,6 +80,8 @@ from guake.utils import get_server_time
 from guake.utils import save_tabs_when_changed
 from guake import serversecrets
 from guake.serverdialog import ServersDialog
+from guake.sftp import SftpSession
+from guake.sftp import build_sftp_argv
 from guake.servers import SERVERS_FILENAME
 from guake.servers import ServerStore
 from guake.servers import SSH_CONFIG_ID_PREFIX
@@ -130,6 +132,7 @@ class Guake(SimpleGladeApp):
             # Keys added by this fork: a stale compiled schema would abort Guake
             # on the first get_string() for them.
             or "open-servers" not in self.settings.keybindingsLocal.keys()
+            or "open-sftp" not in self.settings.keybindingsLocal.keys()
         ):
             log.exception("Schema from old guake version detected, regenerating schema")
             try:
@@ -1035,6 +1038,12 @@ class Guake(SimpleGladeApp):
         self.get_notebook().show_servers_menu()
         return True
 
+    def accel_open_sftp(self, *args):
+        """Callback to toggle the SFTP panel of the current tab. Called by the
+        accel key."""
+        self.get_notebook().on_sftp_clicked(None)
+        return True
+
     def accel_prev(self, *args):
         """Callback to go to the previous tab. Called by the accel key."""
         if self.get_notebook().get_current_page() == 0:
@@ -1397,6 +1406,49 @@ class Guake(SimpleGladeApp):
     def show_servers(self, *args, add_new=False):
         """Open the saved servers manager dialog."""
         ServersDialog(self, add_new=add_new).present_dialog()
+
+    # -- SFTP panel ------------------------------------------------------------
+
+    def current_root_box(self):
+        notebook = self.get_notebook()
+        return notebook.get_nth_page(notebook.get_current_page())
+
+    def toggle_sftp_panel(self, terminal=None):
+        """Show or hide the SFTP panel of the current tab for the server the
+        tab is connected to. Returns False when the tab has no server."""
+        terminal = terminal or self.get_notebook().get_current_terminal()
+        server = self.find_server_by_id(getattr(terminal, "server_id", None))
+        if server is None:
+            return False
+        self.current_root_box().toggle_sftp_panel(server)
+        return True
+
+    def open_sftp_panel(self, server):
+        """Show the SFTP panel for ``server`` in the current tab."""
+        try:
+            build_sftp_argv(server)
+        except ValueError as e:
+            self.show_server_error(
+                _("Cannot open SFTP for '{name}'.").format(name=server.name),
+                _("{error}\n\nFix the server in Servers > Manage servers...").format(error=e),
+            )
+            return None
+        if self.hidden:
+            self.show()
+        return self.current_root_box().open_sftp_panel(server)
+
+    def sftp_session_factory(self, server):
+        """A callable building a not yet started sftp session for ``server``;
+        the saved password (if any) answers the first password prompt."""
+        argv = build_sftp_argv(server)
+
+        def factory(prompt_handler):
+            password = None
+            if server.use_password:
+                password = serversecrets.lookup_password(server.id)
+            return SftpSession(argv, prompt_handler=prompt_handler, password=password)
+
+        return factory
 
     def find_tab(self, directory=None):
         log.debug("find")

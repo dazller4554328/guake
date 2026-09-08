@@ -1,0 +1,8 @@
+features:
+  - |
+    Upload and download files and folders with an SFTP panel, Tabby-style.
+    Open it from the SFTP button on the tab bar, the terminal context menu
+    or ``<Control><Shift>u``: it browses the remote server next to the
+    terminal, with drag-and-drop uploads, a transfer queue with progress,
+    and rename / delete / new folder. It drives OpenSSH's own ``sftp``
+    client, so the connection uses exactly the same settings as the tab.

@@ -443,6 +443,11 @@
             <summary>Open the saved servers menu.</summary>
             <description>Pops up the list of saved SSH servers. Picking one opens a new tab connected to it.</description>
         </key>
+        <key name="open-sftp" type="s">
+            <default>'&lt;Control&gt;&lt;Shift&gt;u'</default>
+            <summary>Toggle the SFTP panel.</summary>
+            <description>Shows or hides the SFTP file browser of the current tab for the saved server it is connected to.</description>
+        </key>
         <key name="close-tab" type="s">
             <default>'&lt;Control&gt;&lt;Shift&gt;w'</default>
             <summary>Closes the current tab.</summary>

@@ -116,6 +116,13 @@ class TerminalNotebook(Gtk.Notebook):
         self.servers_button.connect("clicked", self.on_servers_clicked)
         self.servers_menu = None
 
+        self.sftp_button = Gtk.Button(
+            image=Gtk.Image.new_from_icon_name("folder-remote-symbolic", Gtk.IconSize.MENU),
+            visible=True,
+        )
+        self.sftp_button.set_tooltip_text(_("SFTP file transfer"))
+        self.sftp_button.connect("clicked", self.on_sftp_clicked)
+
         self.tab_selection_button = Gtk.Button(
             image=Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.MENU),
             visible=True,
@@ -128,6 +135,7 @@ class TerminalNotebook(Gtk.Notebook):
         self.action_box.pack_start(self.pin_button, 0, 0, 0)
         self.action_box.pack_start(self.new_page_button, 0, 0, 0)
         self.action_box.pack_start(self.servers_button, 0, 0, 0)
+        self.action_box.pack_start(self.sftp_button, 0, 0, 0)
         self.action_box.pack_start(self.tab_selection_button, 0, 0, 0)
         self.set_action_widget(self.action_box, Gtk.PackType.END)
 
@@ -174,13 +182,20 @@ class TerminalNotebook(Gtk.Notebook):
     def on_servers_clicked(self, button):
         self.show_servers_menu(button)
 
-    def show_servers_menu(self, widget=None):
+    def on_sftp_clicked(self, button):
+        """Toggle the SFTP panel of the current tab. A tab that is not
+        connected to a saved server gets a menu to pick the server first."""
+        if not self.guake.toggle_sftp_panel():
+            self.show_servers_menu(button, action=self.guake.open_sftp_panel)
+
+    def show_servers_menu(self, widget=None, action=None):
         """Pop up the saved servers menu, anchored to ``widget`` (the toolbar
-        button by default). Used by the button and the keyboard shortcut."""
+        button by default). Used by the button and the keyboard shortcut.
+        ``action(server)`` replaces the default "connect in a new tab"."""
         widget = widget or self.servers_button
         # Keep a reference on the instance, otherwise the menu is garbage
         # collected while it is displayed.
-        self.servers_menu = mk_servers_menu(self.guake)
+        self.servers_menu = mk_servers_menu(self.guake, action=action)
         HidePrevention(self.guake.window).prevent()
         self.servers_menu.connect("hide", MenuHideCallback(self.guake.window).on_hide)
         try:

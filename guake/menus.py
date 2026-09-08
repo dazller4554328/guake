@@ -174,9 +174,11 @@ def mk_terminal_context_menu(terminal, window, settings, callback_object):
             mi.set_submenu(submen)
             menu.add(mi)
     menu.add(Gtk.SeparatorMenuItem())
+    guake = callback_object.notebook.guake
     mi = Gtk.MenuItem(_("Servers"))
-    mi.set_submenu(mk_servers_menu(callback_object.notebook.guake))
+    mi.set_submenu(mk_servers_menu(guake))
     menu.add(mi)
+    menu.add(mk_sftp_menu_item(guake, terminal))
     menu.add(Gtk.SeparatorMenuItem())
     mi = Gtk.ImageMenuItem("gtk-preferences")
     mi.set_use_stock(True)
@@ -194,10 +196,12 @@ def mk_terminal_context_menu(terminal, window, settings, callback_object):
     return menu
 
 
-def mk_servers_menu(guake):
+def mk_servers_menu(guake, action=None):
     """Create the saved servers menu: one item per server (grouped into
     submenus), the hosts declared in ~/.ssh/config, then the management
-    entries. Activating a server opens a new tab connected to it."""
+    entries. Activating a server opens a new tab connected to it, or calls
+    ``action(server)`` when given."""
+    action = action or guake.connect_to_server
     menu = Gtk.Menu()
     servers = guake.servers.servers
     if not servers:
@@ -212,12 +216,12 @@ def mk_servers_menu(guake):
             mi.set_submenu(target)
             menu.add(mi)
         for server in members:
-            target.add(_mk_server_item(guake, server))
+            target.add(_mk_server_item(server, action))
     ssh_config_hosts = parse_ssh_config()
     if ssh_config_hosts:
         submenu = Gtk.Menu()
         for server in ssh_config_hosts:
-            submenu.add(_mk_server_item(guake, server))
+            submenu.add(_mk_server_item(server, action))
         menu.add(Gtk.SeparatorMenuItem())
         mi = Gtk.MenuItem(_("Hosts from ~/.ssh/config"))
         mi.set_submenu(submenu)
@@ -233,10 +237,22 @@ def mk_servers_menu(guake):
     return menu
 
 
-def _mk_server_item(guake, server):
+def _mk_server_item(server, action):
     mi = Gtk.MenuItem(server.name)
     mi.set_tooltip_text(server.target if server.port == 22 else f"{server.target}:{server.port}")
-    mi.connect("activate", lambda *args: guake.connect_to_server(server))
+    mi.connect("activate", lambda *args: action(server))
+    return mi
+
+
+def mk_sftp_menu_item(guake, terminal):
+    """Menu entry opening the SFTP panel: directly for a terminal connected
+    to a saved server, through a server submenu otherwise."""
+    server = guake.find_server_by_id(getattr(terminal, "server_id", None))
+    mi = Gtk.MenuItem(_("SFTP file transfer"))
+    if server is not None:
+        mi.connect("activate", lambda *args: guake.toggle_sftp_panel(terminal))
+    else:
+        mi.set_submenu(mk_servers_menu(guake, action=guake.open_sftp_panel))
     return mi
 
 

@@ -19,6 +19,7 @@ from guake.dialogs import RenameDialog
 from guake.globals import PCRE2_MULTILINE
 from guake.menus import mk_tab_context_menu
 from guake.menus import mk_terminal_context_menu
+from guake.sftppanel import SftpPanel
 from guake.utils import HidePrevention
 from guake.utils import TabNameUtils
 from guake.utils import get_server_time
@@ -63,6 +64,36 @@ class TerminalHolder:
         raise NotImplementedError
 
 
+class SidePaned(Gtk.Paned):
+    """Holds the terminals (first child) and the optional SFTP panel (second
+    child) inside a RootTerminalBox, forwarding the TerminalHolder plumbing
+    the terminal boxes expect from their parent to the root box."""
+
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
+
+    def get_guake(self):
+        return self.get_parent().get_guake()
+
+    def get_window(self):
+        return self.get_parent().get_window()
+
+    def get_settings(self):
+        return self.get_parent().get_settings()
+
+    def get_root_box(self):
+        return self.get_parent().get_root_box()
+
+    def get_notebook(self):
+        return self.get_parent().get_notebook()
+
+    def replace_child(self, old, new):
+        self.get_parent().replace_child(old, new)
+
+    def remove_dead_child(self, child):
+        self.get_parent().remove_dead_child(child)
+
+
 class RootTerminalBox(Gtk.Overlay, TerminalHolder):
     def __init__(self, guake, parent_notebook):
         super().__init__()
@@ -70,6 +101,11 @@ class RootTerminalBox(Gtk.Overlay, TerminalHolder):
         self.notebook = parent_notebook
         self.child = None
         self.last_terminal_focused = None
+
+        # Terminals on the left, the optional SFTP panel on the right.
+        self.paned = SidePaned()
+        self.add(self.paned)
+        self.sftp_panel = None
 
         self.searchstring = None
         self.searchre = None
@@ -171,15 +207,52 @@ class RootTerminalBox(Gtk.Overlay, TerminalHolder):
             yield from self.get_child().iter_terminals()
 
     def replace_child(self, old, new):
-        self.remove(old)
+        self.paned.remove(old)
         self.set_child(new)
 
     def set_child(self, terminal_holder):
         if isinstance(terminal_holder, TerminalHolder):
             self.child = terminal_holder
-            self.add(self.child)
+            self.paned.pack1(self.child, True, False)
         else:
             raise RuntimeError(f"Error adding (RootTerminalBox.add({type(terminal_holder)}))")
+
+    def open_sftp_panel(self, server):
+        """Show the SFTP file browser for ``server`` next to the terminals
+        (replacing a panel for another server, if any)."""
+        if self.sftp_panel is not None:
+            if self.sftp_panel.server_id == server.id:
+                self.sftp_panel.view.grab_focus()
+                return self.sftp_panel
+            self.close_sftp_panel(self.sftp_panel)
+        panel = SftpPanel(
+            self.guake.window,
+            server.name,
+            self.guake.sftp_session_factory(server),
+            self.close_sftp_panel,
+        )
+        panel.server_id = server.id
+        self.sftp_panel = panel
+        self.paned.pack2(panel, False, False)
+        panel.show_all()
+        return panel
+
+    def toggle_sftp_panel(self, server):
+        if self.sftp_panel is not None and self.sftp_panel.server_id == server.id:
+            self.sftp_panel.close()
+        else:
+            self.open_sftp_panel(server)
+
+    def close_sftp_panel(self, panel=None):
+        panel = panel or self.sftp_panel
+        if panel is None:
+            return
+        if panel is self.sftp_panel:
+            self.sftp_panel = None
+        self.paned.remove(panel)
+        panel.destroy()
+        if self.last_terminal_focused is not None:
+            self.last_terminal_focused.grab_focus()
 
     def get_child(self):
         return self.child

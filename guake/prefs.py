@@ -106,6 +106,7 @@ HOTKEYS = [
             {"key": "new-tab-home", "label": _("New tab in home directory")},
             {"key": "new-tab-cwd", "label": _("New tab in current directory")},
             {"key": "open-servers", "label": _("Open servers menu")},
+            {"key": "open-sftp", "label": _("Toggle SFTP panel")},
             {"key": "close-tab", "label": _("Close tab")},
             {"key": "rename-current-tab", "label": _("Rename current tab")},
         ],

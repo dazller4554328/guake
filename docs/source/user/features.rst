@@ -154,3 +154,37 @@ press ``r`` before connecting, so Guake never dials every server at startup.
 Servers are stored in ``~/.config/guake/servers.json``. From the command line,
 ``guake --server NAME`` opens a tab connected to the saved server ``NAME`` and
 ``guake --servers`` opens the manager.
+
+SFTP file transfer
+==================
+
+Files and folders can be uploaded to and downloaded from a saved server with
+the SFTP panel, which opens next to the terminal like Tabby's. Show it with
+the SFTP button on the tab bar, the *SFTP file transfer* entry of the
+terminal's right-click menu, or ``<Control><Shift>u``. In a tab connected to
+a saved server the panel opens for that server; in any other tab you pick the
+server from a menu first.
+
+The panel lists the remote directory (double-click a folder to enter it, use
+the path field, the parent and home buttons, or Backspace) and offers:
+
+- **Download**: select files or folders, then *Download...* from the
+  right-click menu, or double-click a file. You choose the local folder;
+  folders are downloaded recursively.
+- **Upload**: the upload buttons pick local files or a folder, and files or
+  folders dragged from your file manager onto the list are uploaded into the
+  current directory. You are asked before an existing file is replaced.
+- **New folder**, **Rename** (F2), **Delete** (Delete key; folders are
+  removed with their content) and **Copy path**.
+
+Transfers queue up at the bottom of the panel with their progress and can be
+cancelled. Uploads and downloads run on their own connection, so browsing
+stays responsive while a large file is being copied.
+
+The panel drives OpenSSH's own ``sftp`` client, so it needs nothing beyond
+``openssh-client`` and honours everything the terminal connection does:
+``~/.ssh/config``, keys and the agent, the jump host and the extra options
+of the saved server (options that only make sense for an interactive
+session, such as ``-t`` or ``-X``, are left out). A password saved in the
+keyring is used automatically; any other question ssh asks (password,
+passphrase, a new host key) is shown in a dialog.
