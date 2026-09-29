@@ -51,6 +51,8 @@ jobs:
       - name: Smoke test (install the package on the runner)
         run: |
           sudo apt-get install -y xvfb ./dist/guake_*_all.deb
+          # Leave the checkout, whose guake/ source folder would shadow the package.
+          cd "$RUNNER_TEMP"
           dpkg -L guake | grep -q '^/usr/lib/python3/dist-packages/guake/paths.py$'
           python3 -c 'import guake.paths as p; assert p.GLADE_DIR == "/usr/share/guake", p.GLADE_DIR'
           xvfb-run -a guake --version
