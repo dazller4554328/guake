@@ -318,9 +318,11 @@ def test_server_tab_survives_save_and_restore(g):
 class StubSftpPanel(Gtk.Box):
     """Stands in for the real panel: no sftp process, just the wiring."""
 
-    def __init__(self, window, server_name, session_factory, on_close):
+    def __init__(self, window, server_name, session_factory, on_close, color="", subtitle=""):
         super().__init__()
         self.server_name = server_name
+        self.color = color
+        self.subtitle = subtitle
         self.session_factory = session_factory
         self.on_close = on_close
         self.view = Gtk.TreeView()

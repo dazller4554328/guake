@@ -1,11 +1,16 @@
+import math
+
 import gi
 
 gi.require_version("Gtk", "3.0")
+from gi.repository import Gdk
 from gi.repository import Gtk
 
 from guake.customcommands import CustomCommands
 from guake.servers import group_servers
 from guake.servers import parse_ssh_config
+from guake.tabcolors import PALETTE
+from guake.tabcolors import auto_color
 
 import logging
 
@@ -27,12 +32,59 @@ def mk_tab_context_menu(callback_object):
     mi_rename = Gtk.MenuItem(_("Rename"))
     mi_rename.connect("activate", callback_object.on_rename)
     menu.add(mi_rename)
+    mi_color = Gtk.MenuItem(_("Tab Color"))
+    mi_color.set_submenu(mk_color_menu(callback_object.user_color, callback_object.on_tab_color))
+    menu.add(mi_color)
     mi_reset_custom_colors = Gtk.MenuItem(_("Reset custom colors"))
     mi_reset_custom_colors.connect("activate", callback_object.on_reset_custom_colors)
     menu.add(mi_reset_custom_colors)
     mi_close = Gtk.MenuItem(_("Close"))
     mi_close.connect("activate", callback_object.on_close)
     menu.add(mi_close)
+    menu.show_all()
+    return menu
+
+
+def color_swatch(color, size=14):
+    """A small rounded square filled with ``color`` (hex), for menus."""
+    area = Gtk.DrawingArea(valign=Gtk.Align.CENTER)
+    area.set_size_request(size, size)
+    rgba = Gdk.RGBA()
+    rgba.parse(color)
+
+    def draw(widget, cr):
+        width, height = widget.get_allocated_width(), widget.get_allocated_height()
+        radius = min(width, height) / 4
+        cr.new_sub_path()
+        cr.arc(width - radius, radius, radius, -math.pi / 2, 0)
+        cr.arc(width - radius, height - radius, radius, 0, math.pi / 2)
+        cr.arc(radius, height - radius, radius, math.pi / 2, math.pi)
+        cr.arc(radius, radius, radius, math.pi, 3 * math.pi / 2)
+        cr.close_path()
+        cr.set_source_rgba(rgba.red, rgba.green, rgba.blue, 1)
+        cr.fill()
+        return False
+
+    area.connect("draw", draw)
+    return area
+
+
+def mk_color_menu(current, callback):
+    """Submenu listing the tab colours; ``callback(item, color)`` gets "" for
+    the automatic colour. The current choice is shown with a check mark."""
+    menu = Gtk.Menu()
+    items = [("", _("Automatic"))] + [(color, _(name)) for name, color in PALETTE]
+    for color, name in items:
+        item = Gtk.CheckMenuItem()
+        item.set_draw_as_radio(True)
+        item.set_active(color == current)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        if color:
+            box.pack_start(color_swatch(color), False, False, 0)
+        box.pack_start(Gtk.Label(label=name, xalign=0.0), True, True, 0)
+        item.add(box)
+        item.connect("activate", callback, color)
+        menu.add(item)
     menu.show_all()
     return menu
 
@@ -238,8 +290,18 @@ def mk_servers_menu(guake, action=None):
 
 
 def _mk_server_item(server, action):
-    mi = Gtk.MenuItem(server.name)
-    mi.set_tooltip_text(server.target if server.port == 22 else f"{server.target}:{server.port}")
+    """Menu entry for a server: its tab colour, its name and, dimmed, where
+    it connects to."""
+    detail = server.target if server.port == 22 else f"{server.target}:{server.port}"
+    mi = Gtk.MenuItem()
+    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    box.pack_start(color_swatch(server.color or auto_color(server.id), size=10), False, False, 0)
+    box.pack_start(Gtk.Label(label=server.name, xalign=0.0), True, True, 0)
+    detail_label = Gtk.Label(label=detail, xalign=1.0, margin_start=16)
+    detail_label.get_style_context().add_class("dim-label")
+    box.pack_end(detail_label, False, False, 0)
+    mi.add(box)
+    mi.set_tooltip_text(detail)
     mi.connect("activate", lambda *args: action(server))
     return mi
 

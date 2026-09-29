@@ -32,11 +32,17 @@ def guake(tmp_path, mocker):
 
 
 def menu_labels(menu):
-    return [
-        item.get_label()
-        for item in menu.get_children()
-        if not isinstance(item, Gtk.SeparatorMenuItem)
-    ]
+    """Text of each menu item; for server items (swatch, name, detail) the name."""
+    labels = []
+    for item in menu.get_children():
+        if isinstance(item, Gtk.SeparatorMenuItem):
+            continue
+        label = item.get_label()
+        if label is None:
+            box = item.get_child()
+            label = next(w.get_text() for w in box.get_children() if isinstance(w, Gtk.Label))
+        labels.append(label)
+    return labels
 
 
 def first_path():
@@ -307,3 +313,136 @@ def test_notebook_has_servers_button(mocker):
         mocker.patch(target, create=True)
     nb = TerminalNotebook()
     assert nb.servers_button in nb.action_box.get_children()
+
+
+# --- polish: search, colours, empty state, backups ---------------------------------
+
+
+def visible_names(dialog):
+    names = []
+
+    def walk(rows):
+        for row in rows:
+            names.append(row[1])
+            walk(row.iterchildren())
+
+    walk(dialog.filter)
+    return names
+
+
+def test_manager_search_filters_by_name_host_and_group(guake):
+    guake.servers.add(Server(name="solo", host="alpha.example"))
+    guake.servers.add(Server(name="web", host="h", group="Prod"))
+    guake.servers.add(Server(name="db", host="h", group="Prod"))
+    dialog = ServersDialog(guake)
+
+    dialog.search_entry.set_text("alpha")
+    dialog.on_search_changed(dialog.search_entry)
+    assert visible_names(dialog) == ["solo"]
+    assert dialog.selected_server().name == "solo"
+
+    dialog.search_entry.set_text("prod")
+    dialog.on_search_changed(dialog.search_entry)
+    assert visible_names(dialog) == ["Prod", "db", "web"]
+
+    dialog.search_entry.set_text("")
+    dialog.on_search_changed(dialog.search_entry)
+    assert len(visible_names(dialog)) == 4
+    dialog.destroy()
+
+
+def test_manager_shows_empty_state_without_servers(guake):
+    dialog = ServersDialog(guake)
+    assert dialog.stack.get_visible_child_name() == "empty"
+    assert not dialog.export_backup_item.get_sensitive()
+    guake.servers.add(Server(name="solo", host="h"))
+    dialog.refresh()
+    assert dialog.stack.get_visible_child_name() == "list"
+    assert dialog.export_backup_item.get_sensitive()
+    dialog.destroy()
+
+
+def test_manager_sftp_button_opens_panel(guake):
+    guake.open_sftp_panel = mock.Mock()
+    server = guake.servers.add(Server(name="solo", host="h"))[0]
+    dialog = ServersDialog(guake)
+    dialog.view.set_cursor(first_path(), None, False)
+    dialog.on_sftp()
+    guake.open_sftp_panel.assert_called_once_with(server)
+
+
+def test_edit_dialog_color_picker_round_trips(guake):
+    server = Server(name="a", host="h", color="#e62d42")
+    dialog = ServerEditDialog(Gtk.Window(), guake.servers, server)
+    assert dialog.selected_color() == "#e62d42"
+    dialog.color_buttons[""].set_active(True)
+    assert dialog.build_server().color == ""
+    dialog.color_buttons["#3584e4"].set_active(True)
+    assert dialog.build_server().color == "#3584e4"
+    dialog.destroy()
+
+
+def test_export_dialog_validates_passphrase():
+    from guake.serverbackupdialogs import ExportDialog
+
+    dialog = ExportDialog(Gtk.Window(), 3)
+    assert dialog.validation_error() is None  # servers only
+    dialog.include_secrets.set_active(True)
+    dialog.passphrase.set_text("short")
+    dialog.confirm.set_text("short")
+    assert "12" in dialog.validation_error()
+    dialog.passphrase.set_text("long enough pass")
+    dialog.confirm.set_text("different pass!!")
+    assert dialog.validation_error() == "The two passphrases are different."
+    dialog.confirm.set_text("long enough pass")
+    assert dialog.validation_error() is None
+    dialog.destroy()
+
+
+def test_passphrase_dialog_retries_on_wrong_passphrase(mocker):
+    from guake import serverbackup
+    from guake.serverbackupdialogs import PassphraseDialog
+
+    dialog = PassphraseDialog(Gtk.Window())
+    mocker.patch.object(dialog, "run", side_effect=[Gtk.ResponseType.OK, Gtk.ResponseType.OK])
+    secrets = serverbackup.Secrets(passwords={"a": "b"})
+    decrypt = mocker.patch(
+        "guake.serverbackupdialogs.serverbackup.decrypt_secrets",
+        side_effect=[serverbackup.WrongPassphrase("no"), secrets],
+    )
+    assert dialog.run_for_secrets(object()) == secrets
+    assert decrypt.call_count == 2
+    assert dialog.error.get_visible()
+    dialog.destroy()
+
+
+def test_passphrase_dialog_skip_imports_without_secrets(mocker):
+    from guake import serverbackup
+    from guake.serverbackupdialogs import PassphraseDialog
+
+    dialog = PassphraseDialog(Gtk.Window())
+    mocker.patch.object(dialog, "run", return_value=PassphraseDialog.SKIP)
+    assert dialog.run_for_secrets(object()) == serverbackup.Secrets()
+    dialog.destroy()
+
+
+def test_edit_dialog_keeps_a_custom_colour(guake):
+    server = Server(name="a", host="h", color="#123456")
+    dialog = ServerEditDialog(Gtk.Window(), guake.servers, server)
+    assert dialog.build_server().color == "#123456"
+    dialog.destroy()
+
+
+def test_import_asks_before_accepting_servers_that_run_commands(guake, mocker, tmp_path):
+    from guake import serverbackup
+    from guake import serverbackupdialogs as dialogs
+
+    path = tmp_path / "b.json"
+    evil = Server(name="evil", host="h", options="-o ProxyCommand=touch /tmp/pwn")
+    serverbackup.write_backup(path, serverbackup.build_backup([evil]))
+    mocker.patch.object(dialogs, "_choose_file", return_value=str(path))
+    confirm = mocker.patch.object(dialogs, "confirm_risky_servers", return_value=False)
+
+    assert dialogs.import_servers(Gtk.Window(), guake.servers) is None
+    assert confirm.call_args[0][1] == [evil]
+    assert guake.servers.servers == []

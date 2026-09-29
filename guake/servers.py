@@ -23,7 +23,8 @@ Servers are persisted as JSON in ``~/.config/guake/servers.json``::
                 "jump_host": "",
                 "options": "-o ServerAliveInterval=30",
                 "command": "tmux attach || tmux",
-                "use_password": false
+                "use_password": false,
+                "color": "#3584e4"
             }
         ]
     }
@@ -36,6 +37,7 @@ and handed to ``sshpass`` through the environment at connection time.
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import uuid
@@ -49,6 +51,10 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+from guake.tabcolors import COLOR_PATTERN
+
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
 log = logging.getLogger(__name__)
 
 SERVERS_SCHEMA_VERSION = 1
@@ -56,6 +62,10 @@ SERVERS_FILENAME = "servers.json"
 DEFAULT_SSH_PORT = 22
 SSH_CONFIG_GROUP = "SSH config"
 SSH_CONFIG_ID_PREFIX = "sshconfig:"
+
+# sshpass exit statuses (see sshpass(1)).
+SSHPASS_HOST_KEY_UNKNOWN = 6
+SSHPASS_HOST_KEY_CHANGED = 7
 
 # Shell used to run the connection wrapper. Deliberately not the user's
 # login shell: the wrapper is POSIX sh and would break under fish.
@@ -79,16 +89,38 @@ class Server:
     options: str = ""
     command: str = ""
     use_password: bool = False
+    # Tab colour, "#rrggbb"; empty picks one automatically.
+    color: str = ""
 
     def __post_init__(self):
         if not self.id:
             object.__setattr__(self, "id", uuid.uuid4().hex)
+        if self.color and not COLOR_PATTERN.match(self.color):
+            raise ValueError(f"Invalid colour for server {self.name!r}: {self.color!r}")
+        object.__setattr__(self, "color", self.color.lower())
         if not isinstance(self.port, int) or not 1 <= self.port <= 65535:
             raise ValueError(f"Invalid port for server {self.name!r}: {self.port!r}")
         if not self.name.strip():
             raise ValueError("A server needs a name")
         if not self.host.strip():
             raise ValueError(f"Server {self.name!r} needs a host")
+        self._check_fields()
+
+    def _check_fields(self):
+        """Refuse values ssh would read as options (``-oProxyCommand=...``) or
+        that could smuggle terminal escape sequences, whether typed in the
+        editor or coming from servers.json or a backup."""
+        for field in ("name", "host", "user", "jump_host", "identity_file", "group"):
+            if CONTROL_CHARS.search(getattr(self, field)):
+                raise ValueError(f"The {field} of server {self.name!r} has control characters")
+        for field in ("host", "user", "jump_host"):
+            value = getattr(self, field)
+            if value.startswith("-") or any(c.isspace() for c in value):
+                raise ValueError(
+                    f"The {field} of server {self.name!r} cannot start with '-' or contain spaces"
+                )
+        if "@" in self.user:
+            raise ValueError(f"The user of server {self.name!r} cannot contain '@'")
 
     @property
     def target(self) -> str:
@@ -106,6 +138,10 @@ class Server:
         known = {f: data.get(f) for f in cls.__dataclass_fields__ if f in data}
         if "port" in known:
             known["port"] = int(known["port"])
+        color = known.get("color")
+        if color is not None and not (isinstance(color, str) and COLOR_PATTERN.match(color)):
+            log.warning("Ignoring invalid colour %r of server %r", color, known.get("name"))
+            known.pop("color")
         return cls(**known)
 
 
@@ -169,6 +205,13 @@ def save_servers(path: Path, servers: Iterable[Server]) -> None:
     log.info("Saved %d server(s) to %s", len(payload["servers"]), path)
 
 
+@dataclass(frozen=True)
+class MergeResult:
+    added: List[Server]
+    updated: List[Server]
+    unchanged: List[Server]
+
+
 class ServerStore:
     """In-memory list of servers backed by a JSON file.
 
@@ -218,25 +261,43 @@ class ServerStore:
             self._commit([*self._servers, *added])
         return added
 
+    def merge(self, incoming: Iterable[Server]) -> "MergeResult":
+        """Add or update servers from a backup. An incoming server replaces
+        the saved one with the same id, or else the one with the same name
+        (keeping the local id so its keyring password stays attached).
+        Anything else is added."""
+        current = list(self._servers)
+        added, updated, unchanged = [], [], []
+        for server in incoming:
+            match = next((s for s in current if s.id == server.id), None) or next(
+                (s for s in current if s.name.lower() == server.name.lower()), None
+            )
+            if match is None:
+                added.append(server)
+                current.append(server)
+                continue
+            merged = server.with_changes(id=match.id)
+            if merged == match:
+                unchanged.append(match)
+                continue
+            updated.append(merged)
+            current = [merged if s.id == match.id else s for s in current]
+        if added or updated:
+            self._commit(current)
+        return MergeResult(added=added, updated=updated, unchanged=unchanged)
+
     def _commit(self, servers: List[Server]) -> List[Server]:
         save_servers(self.path, servers)
         self._servers = sorted(servers, key=sort_key)
         return self.servers
 
 
-def build_ssh_argv(server: Server) -> List[str]:
-    """The plain ``ssh`` command line for a server (no wrapper, no sshpass).
-
-    Entries that come straight from ``~/.ssh/config`` are launched as a bare
-    ``ssh <alias>`` so that ssh applies the whole config stanza itself.
-    """
-    argv = ["ssh"]
+def _ssh_argv(server: Server, pre_options: List[str], command: str, force_tty: bool) -> List[str]:
+    argv = ["ssh", *pre_options]
     if is_ssh_config_server(server):
-        if server.command:
-            argv += ["-t", server.host, server.command]
-        else:
-            argv.append(server.host)
-        return argv
+        if force_tty:
+            argv.append("-t")
+        return [*argv, server.host, *([command] if command else [])]
     if server.port != DEFAULT_SSH_PORT:
         argv += ["-p", str(server.port)]
     if server.identity_file:
@@ -248,32 +309,127 @@ def build_ssh_argv(server: Server) -> List[str]:
             argv += shlex.split(server.options)
         except ValueError as e:
             raise ValueError(f"Invalid SSH options for server {server.name!r}: {e}") from e
-    if server.command:
-        # Force a tty so interactive remote commands (tmux, htop...) work.
+    if force_tty:
         argv.append("-t")
     argv.append(server.target)
-    if server.command:
-        argv.append(server.command)
+    if command:
+        argv.append(command)
     return argv
+
+
+def build_ssh_argv(server: Server) -> List[str]:
+    """The plain ``ssh`` command line for a server (no wrapper, no sshpass).
+
+    Entries that come straight from ``~/.ssh/config`` are launched as a bare
+    ``ssh <alias>`` so that ssh applies the whole config stanza itself.
+    """
+    # Force a tty so interactive remote commands (tmux, htop...) work.
+    return _ssh_argv(server, [], server.command, force_tty=bool(server.command))
+
+
+def build_hostkey_argv(server: Server) -> List[str]:
+    """An ``ssh`` command that only gets as far as the host key check.
+
+    sshpass refuses to answer ssh's "The authenticity of host ... can't be
+    established" question and exits instead, so a server with a saved
+    password could never be reached the first time. This command lets ssh ask
+    the user in the terminal (showing the real fingerprint and honouring
+    ~/.ssh/config, jump hosts and known_hosts settings) and then stops at
+    authentication, since the only method it offers is "none".
+    """
+    # ssh keeps the first value given for an option, so ours goes first.
+    return _ssh_argv(server, ["-o", "PreferredAuthentications=none"], "true", force_tty=False)
+
+
+def known_hosts_name(server: Server) -> str:
+    """How ``ssh-keygen -R`` names the server in known_hosts."""
+    if server.port == DEFAULT_SSH_PORT:
+        return server.host
+    return f"[{server.host}]:{server.port}"
+
+
+def forget_host_key_command(server: Server) -> str:
+    """The command that removes the server's old key from known_hosts.
+    For a ~/.ssh/config alias the real name is only known to ssh, so ask it."""
+    if is_ssh_config_server(server):
+        alias = shlex.quote(server.host)
+        return (
+            f'ssh-keygen -R "$(ssh -G {alias} | awk \'$1 == "hostname" {{h=$2}} '
+            f'$1 == "port" {{p=$2}} END {{print (p == 22 ? h : "[" h "]:" p)}}\')"'
+        )
+    return shlex.join(["ssh-keygen", "-R", known_hosts_name(server)])
 
 
 CLOSED_MESSAGE = "Connection to {name} closed (exit status {status})."
 RESTORED_MESSAGE = "Tab for {name} restored, not connected yet."
 RECONNECT_PROMPT = "Press r then Enter to reconnect, or Enter to close this tab: "
+HOSTKEY_UNKNOWN_MESSAGE = (
+    "[Guake] First connection to {name}: ssh does not know this server yet. "
+    "Check the fingerprint below and type yes to trust it."
+)
+HOSTKEY_REJECTED_MESSAGE = (
+    "[Guake] The host key is not trusted, so the saved password was not sent. "
+    "Press r to be asked again."
+)
+HOSTKEY_CHANGED_MESSAGE = (
+    "[Guake] WARNING: THE HOST KEY HAS CHANGED since you last connected. Someone "
+    "could be intercepting the connection, so the saved password was not sent. If "
+    "the server was reinstalled, remove the old key with: {command}"
+)
 NO_SSHPASS_MESSAGE = (
     "[Guake] 'sshpass' is not installed, so the saved password cannot be used. "
     "Enter it manually or install sshpass."
 )
 
 
+@dataclass(frozen=True)
+class LaunchMessages:
+    """Texts the connection wrapper prints in the terminal (translated by the
+    caller). ``{name}`` is the server name, ``{status}`` the ssh exit status
+    and ``{command}`` the command that forgets an old host key."""
+
+    closed: str = CLOSED_MESSAGE
+    reconnect_prompt: str = RECONNECT_PROMPT
+    no_sshpass: str = NO_SSHPASS_MESSAGE
+    restored: str = RESTORED_MESSAGE
+    hostkey_unknown: str = HOSTKEY_UNKNOWN_MESSAGE
+    hostkey_rejected: str = HOSTKEY_REJECTED_MESSAGE
+    hostkey_changed: str = HOSTKEY_CHANGED_MESSAGE
+
+
+def _print_line(text: str, blank_before: bool = False) -> str:
+    fmt = "\\n%s\\n" if blank_before else "%s\\n"
+    return f"printf '{fmt}' {shlex.quote(text)}"
+
+
+def _hostkey_handling(server: Server, messages: LaunchMessages) -> str:
+    """Shell lines run right after ``sshpass ssh`` exits with ``$status``.
+
+    On an unknown host key, let ssh ask the user once and try again. On a
+    rejected or changed key, explain why the password was not sent."""
+    forget = forget_host_key_command(server)
+    return (
+        f'  if [ "$status" -eq {SSHPASS_HOST_KEY_UNKNOWN} ] && [ "$hostkey_asked" -eq 0 ]; then\n'
+        "    hostkey_asked=1\n"
+        f"    {_print_line(messages.hostkey_unknown.format(name=server.name))}\n"
+        # ssh asks on /dev/tty; its stderr only has the expected auth failure.
+        f"    {shlex.join(build_hostkey_argv(server))} 2>/dev/null\n"
+        "    continue\n"
+        "  fi\n"
+        '  case "$status" in\n'
+        f"    {SSHPASS_HOST_KEY_UNKNOWN}) "
+        f"{_print_line(messages.hostkey_rejected, blank_before=True)} ;;\n"
+        f"    {SSHPASS_HOST_KEY_CHANGED}) "
+        f"{_print_line(messages.hostkey_changed.format(command=forget), blank_before=True)} ;;\n"
+        "  esac\n"
+    )
+
+
 def build_launch(
     server: Server,
     password: Optional[str] = None,
-    closed_message: str = CLOSED_MESSAGE,
-    reconnect_prompt: str = RECONNECT_PROMPT,
-    no_sshpass_message: str = NO_SSHPASS_MESSAGE,
+    messages: LaunchMessages = LaunchMessages(),
     deferred: bool = False,
-    restored_message: str = RESTORED_MESSAGE,
 ) -> Tuple[List[str], List[str]]:
     """Return ``(argv, extra_env)`` to spawn in a terminal for ``server``.
 
@@ -290,42 +446,50 @@ def build_launch(
     line where ``ps`` would show it. It stays in the wrapper shell's
     environment while the tab is open so that reconnecting works; that is
     readable by the user's own processes only, the same exposure as any
-    ``sshpass -e`` invocation.
+    ``sshpass -e`` invocation. sshpass will not answer ssh's question about
+    an unknown host key, so the wrapper then lets ssh ask the user directly.
     """
     ssh_argv = build_ssh_argv(server)
     extra_env: List[str] = []
     notice = ""
+    hostkey = ""
     if password:
         if shutil.which("sshpass"):
             ssh_argv = ["sshpass", "-e", *ssh_argv]
             extra_env.append(f"SSHPASS={password}")
+            hostkey = _hostkey_handling(server, messages)
         else:
             log.warning("sshpass not found; cannot use the saved password for %s", server.name)
-            notice = f"printf '%s\\n' {shlex.quote(no_sshpass_message)}\n"
+            notice = _print_line(messages.no_sshpass) + "\n"
 
     # The message becomes a printf format string: escape literal '%' and let
     # printf substitute the exit status so it is not stuck inside quotes.
-    closed_format = closed_message.replace("%", "%%").format(
-        name=server.name.replace("%", "%%"), status="%s"
+    closed_format = (
+        messages.closed.replace("\\", "\\\\")
+        .replace("%", "%%")
+        .format(name=server.name.replace("\\", "\\\\").replace("%", "%%"), status="%s")
     )
+    reconnect_prompt = shlex.quote(messages.reconnect_prompt)
     gate = ""
     if deferred:
-        restored = restored_message.format(name=server.name)
+        restored = messages.restored.format(name=server.name)
         gate = (
-            f"printf '%s\\n' {shlex.quote(restored)}\n"
-            f"printf '%s' {shlex.quote(reconnect_prompt)}\n"
+            f"{_print_line(restored)}\n"
+            f"printf '%s' {reconnect_prompt}\n"
             "read -r answer || exit 0\n"
             'case "$answer" in r|R) ;; *) exit 0 ;; esac\n'
         )
     script = (
         f"{notice}{gate}"
+        "hostkey_asked=0\n"
         "while true; do\n"
         f"  {shlex.join(ssh_argv)}\n"
         "  status=$?\n"
+        f"{hostkey}"
         f"  printf '\\n'{shlex.quote(closed_format)}'\\n' \"$status\"\n"
-        f"  printf '%s' {shlex.quote(reconnect_prompt)}\n"
+        f"  printf '%s' {reconnect_prompt}\n"
         "  read -r answer || exit $status\n"
-        '  case "$answer" in r|R) continue ;; *) exit $status ;; esac\n'
+        '  case "$answer" in r|R) hostkey_asked=0; continue ;; *) exit $status ;; esac\n'
         "done\n"
     )
     return [WRAPPER_SHELL, "-c", script], extra_env

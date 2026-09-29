@@ -507,6 +507,7 @@ class TerminalNotebook(Gtk.Notebook):
     def on_switch_page(self, notebook, page, page_num):
         """Clear the highlight from the tab being switched to, and start a short
         grace period on the tab that just lost focus."""
+        self.mark_active_tab(page_num)
         previous_page = self._activity_last_page
         self._activity_last_page = page
         if previous_page is not None and previous_page is not page and getattr(self, "guake", None):
@@ -521,6 +522,23 @@ class TerminalNotebook(Gtk.Notebook):
         label = self.get_tab_label(page)
         if hasattr(label, "set_activity"):
             label.set_activity(False)
+
+    def mark_active_tab(self, page_num):
+        """Paint the tab of page ``page_num`` as the current one. switch-page
+        is emitted before the notebook updates its current page, hence the
+        explicit number."""
+        for index, label in enumerate(self.iter_tabs()):
+            if hasattr(label, "set_active"):
+                label.set_active(index == page_num)
+
+    def refresh_tab_colors(self):
+        """Repaint every tab, e.g. after the tab bar moved or a server changed."""
+        for label in self.iter_tabs():
+            if getattr(label, "server", None) is not None:
+                server = self.guake.find_server_by_id(label.server.id)
+                label.set_server(server or label.server)
+            elif hasattr(label, "refresh_color"):
+                label.refresh_color()
 
     def clear_all_tab_activity(self):
         """Remove activity highlights from every tab (e.g. when the feature is
@@ -575,8 +593,8 @@ class TerminalNotebook(Gtk.Notebook):
                 label = TabLabelEventBox(self, new_text, self.guake.settings)
                 label.add_events(Gdk.EventMask.SCROLL_MASK)
                 label.connect("scroll-event", self.scroll_callback.on_scroll)
-
                 self.set_tab_label(page, label)
+                self.mark_active_tab(self.get_current_page())
             if user_set:
                 setattr(page, "custom_label_set", new_text != "-")
 

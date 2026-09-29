@@ -33,6 +33,17 @@ What this fork adds
   rename, delete, copy paths, and watch a transfer queue with progress and cancel. It
   drives OpenSSH's own ``sftp`` client, so keys, agent, ``~/.ssh/config`` and jump hosts
   all work with no extra setup.
+- **Backup and restore of your servers** – *Export backup...* in the server manager
+  saves every server to one file; *Import backup...* on another machine brings them all
+  back. Saved passwords and private keys can go along, encrypted with a passphrase you
+  choose.
+- **Coloured tabs** – each server tab gets its own colour (pick one per server, or per
+  tab from the tab's right-click *Tab Color* menu) and a server icon, so you can tell
+  production from the lab at a glance.
+- **First connection to a new server just works** – with a saved password, ssh's
+  "authenticity of host ... can't be established" question used to end the
+  connection. The tab now shows the fingerprint and asks you to type ``yes``, then logs
+  in with the saved password.
 - **Word characters preference** – choose which characters count as part of a word when
   double-clicking to select text (upstream issue #2304).
 - New command line options: ``guake --server NAME`` opens a tab connected to a saved
@@ -44,11 +55,35 @@ transfer*.
 Installation
 ============
 
-This fork is not in any distribution's package repository, so it has to be installed from
-source. It takes about five minutes.
+This fork is not in any distribution's package repository. On Debian, Ubuntu, Mint and
+other Debian-based systems the easiest way is the ``.deb`` attached to each GitHub release;
+everywhere else, build it from source (about five minutes).
+
+Install from the .deb (Debian / Ubuntu / Mint)
+----------------------------------------------
+
+Download ``guake_<version>_all.deb`` from the
+`Releases page <https://github.com/dazller4554328/guake/releases>`_ and install it with
+``apt``, which also pulls in the GTK, VTE and Python dependencies:
+
+.. code-block:: bash
+
+   sudo apt install ./guake_*_all.deb
+
+The package replaces the distribution's ``guake`` package automatically and recommends
+``openssh-client``, ``sshpass``, ``gir1.2-secret-1`` and ``python3-cryptography`` for the
+server and SFTP features. If you previously installed from source, run
+``sudo make uninstall`` in that checkout first: the copy in ``/usr/local`` would otherwise
+shadow the packaged one. Remove it again with ``sudo apt remove guake``.
+
+To build the package yourself from a checkout, run ``./scripts/build-deb.sh``; the result
+lands in ``dist/``.
+
+Build from source
+-----------------
 
 1. Remove a packaged Guake if you have one
-------------------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Two copies of Guake installed side by side will fight over the D-Bus name and the F12
 hotkey. Uninstall the distribution package first:
@@ -60,7 +95,7 @@ hotkey. Uninstall the distribution package first:
    sudo pacman -R guake         # Arch / Manjaro
 
 2. Get the source
------------------
+~~~~~~~~~~~~~~~~~
 
 Do **NOT** use the ZIP or tarball that GitHub offers on the Releases or Code pages. The
 build uses PBR, which needs the full Git history to work out the version. Clone instead:
@@ -71,7 +106,7 @@ build uses PBR, which needs the full Git history to work out the version. Clone 
    cd guake
 
 3. Install the system dependencies
-----------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The repository ships a script per distribution that installs the GTK, VTE and Python
 packages Guake needs:
@@ -108,7 +143,7 @@ For example on Ubuntu:
    sudo apt install openssh-client gir1.2-secret-1 sshpass
 
 4. Build and install
---------------------
+~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
@@ -119,7 +154,7 @@ If ``sudo make install`` complains about a "dubious ownership" Git error, run
 ``sudo git config --global --add safe.directory '*'`` once and try again.
 
 5. Run it
----------
+~~~~~~~~~
 
 .. code-block:: bash
 
@@ -157,8 +192,14 @@ choose *Manage servers...*, then *Add*. Fill in a name, host and user. Pick a pr
 file if you use one, or type a password to store it in the keyring. Click the server's
 name in the menu to open a tab connected to it.
 
-**Import from ~/.ssh/config**: in *Manage servers...* click *Import ~/.ssh/config*. Hosts
+**Import from ~/.ssh/config**: in *Manage servers...* open the menu at the top right and
+choose *Import hosts from ~/.ssh/config*. Hosts
 you already have there are listed automatically even without importing.
+
+**Move your servers to another machine**: in *Manage servers...* open the menu at the top
+right and choose *Export backup...*. Tick *Include saved passwords and private keys* and
+pick a passphrase if you want those too. On the other machine choose *Import backup...*
+and select the file. Servers with the same name are updated, new ones are added.
 
 **Transfer files**: in a tab connected to a saved server press ``Ctrl+Shift+U``. The SFTP
 panel opens on the right. Drag files from your file manager onto it to upload, double-click
@@ -172,6 +213,9 @@ Where things are stored
 
 - Saved servers: ``~/.config/guake/servers.json`` (passwords are **not** in this file).
 - Passwords: your desktop keyring (GNOME Keyring, KDE Wallet, ...) via libsecret.
+- Private keys restored from a backup: where the server expects them in ``~/.ssh``, or
+  ``~/.ssh/guake-imported/`` when a different key already has that name (nothing is ever
+  overwritten).
 - Everything else: the same GSettings keys upstream Guake uses.
 
 Upstream Guake

@@ -142,9 +142,43 @@ a port and a user name, plus optionally:
 - extra ssh options,
 - a command to run once logged in, for example ``tmux attach || tmux``.
 
-*Manage servers...* adds, edits, removes and imports servers. Hosts declared
-in ``~/.ssh/config`` are listed automatically, and *Import ~/.ssh/config*
-copies them into the saved list so they can be edited.
+*Manage servers...* lists the servers with a search field and adds, edits,
+removes and connects to them (*Files* opens the SFTP panel instead). Hosts
+declared in ``~/.ssh/config`` are listed automatically in the servers menu,
+and *Import hosts from ~/.ssh/config* in the manager's menu copies them into
+the saved list so they can be edited.
+
+Each server has a tab colour: pick one in the editor, or leave it on *Auto*
+for a colour derived from the server. Server tabs show that colour and a
+server icon; the current tab is painted more strongly. Any tab, local or not,
+can be given a colour from its right-click *Tab Color* menu, and that choice
+is kept with the saved tab session.
+
+The first time you connect to a server with a saved password, ssh does not
+know its host key yet and ``sshpass`` refuses to answer that question for
+you. The tab then shows ssh's own prompt with the key fingerprint: type
+``yes`` to trust it and the login continues with the saved password. If the
+host key has *changed*, the password is not sent and the tab explains how to
+remove the old key (``ssh-keygen -R``) if the change is expected.
+
+Backup and restore
+------------------
+
+*Export backup...* in the manager's menu writes every saved server to a JSON
+file (readable only by you), to set Guake up on another machine or keep a
+copy. With *Include saved passwords and private keys* the keyring passwords
+and the private key files the servers use are added too, encrypted with
+AES-256-GCM under a key derived from a passphrase you choose (scrypt). This
+needs ``python3-cryptography``; without it only the server list is exported.
+
+*Import backup...* reads such a file (or a plain ``servers.json``). A server
+with the same id or name as a saved one updates it, the others are added.
+When the file holds secrets you are asked for the passphrase, or you can
+import without them and type passwords when connecting. Passwords go to the
+keyring; private keys go where the server expects them inside ``~/.ssh`` or,
+when a different key already has that name or the path is outside
+``~/.ssh``, to ``~/.ssh/guake-imported/``. Existing files are never
+overwritten.
 
 When a connection ends the tab stays open, shows why, and offers to reconnect
 (press ``r`` then Enter) or close (Enter). Server tabs are part of the saved
@@ -165,8 +199,10 @@ terminal's right-click menu, or ``<Control><Shift>u``. In a tab connected to
 a saved server the panel opens for that server; in any other tab you pick the
 server from a menu first.
 
-The panel lists the remote directory (double-click a folder to enter it, use
-the path field, the parent and home buttons, or Backspace) and offers:
+The panel lists the remote directory (double-click a folder to enter it,
+click a folder in the path bar, type a path after clicking the pencil or
+pressing ``<Control>l``, use the parent and home buttons, or Backspace) and
+offers:
 
 - **Download**: select files or folders, then *Download...* from the
   right-click menu, or double-click a file. You choose the local folder;

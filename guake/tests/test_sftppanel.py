@@ -218,3 +218,69 @@ def test_prompt_from_worker_is_answered_through_dialog(monkeypatch, tmp_path):
     assert names(panel) == ["hello.txt"]
     panel.shutdown()
     window.destroy()
+
+
+# --- polish: breadcrumbs, icons, header, transfer placeholder -----------------
+
+
+def test_breadcrumbs_list_every_level_of_a_short_path():
+    from guake.sftppanel import breadcrumb_segments
+
+    assert breadcrumb_segments("/") == [("/", "/")]
+    assert breadcrumb_segments("/home/me") == [("/", "/"), ("home", "/home"), ("me", "/home/me")]
+
+
+def test_breadcrumbs_fold_the_middle_of_a_long_path():
+    from guake.sftppanel import breadcrumb_segments
+
+    assert breadcrumb_segments("/srv/www/site/current/public", max_segments=3) == [
+        ("/", "/"),
+        ("…", "/srv/www"),
+        ("site", "/srv/www/site"),
+        ("current", "/srv/www/site/current"),
+        ("public", "/srv/www/site/current/public"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "name,is_dir,expected",
+    [
+        ("photos", True, "folder-symbolic"),
+        ("cat.png", False, "image-x-generic-symbolic"),
+        ("notes.txt", False, "text-x-generic-symbolic"),
+        ("backup.tar.gz", False, "package-x-generic-symbolic"),
+    ],
+)
+def test_file_icon_follows_the_content_type(name, is_dir, expected):
+    from guake.sftppanel import file_icon_name
+
+    assert file_icon_name(name, "dir" if is_dir else "file") == expected
+
+
+@needs_sftp
+def test_panel_header_breadcrumbs_and_transfer_hint(remote, dialogs):
+    window = Gtk.Window()
+    panel = SftpPanel(
+        window,
+        "web",
+        lambda handler: SftpSession(["sftp", "-D", local_sftp_server()], prompt_handler=handler),
+        lambda p: None,
+        color="#e62d42",
+        subtitle="root@web",
+    )
+    window.add(panel)
+    window.show_all()
+    try:
+        assert pump(lambda: panel.current_dir is not None)
+        assert panel.subtitle_label.get_text() == "root@web"
+        labels = [b.get_label() for b in panel.crumbs.get_children()]
+        assert labels[-1] == os.path.basename(panel.current_dir)
+        assert panel.transfer_stack.get_visible_child_name() == "empty"
+
+        panel.show_path_entry()
+        assert panel.path_stack.get_visible_child_name() == "entry"
+        panel.hide_path_entry()
+        assert panel.path_stack.get_visible_child_name() == "crumbs"
+    finally:
+        panel.shutdown()
+        window.destroy()

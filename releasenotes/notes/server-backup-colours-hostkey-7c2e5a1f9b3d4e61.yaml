@@ -1,0 +1,20 @@
+---
+features:
+  - |
+    Saved servers can be exported to a backup file and imported on another
+    machine from the server manager's menu. Saved passwords and private keys
+    can be included, encrypted with a passphrase (needs python3-cryptography).
+  - |
+    Coloured tabs: server tabs show a colour (chosen per server, or automatic)
+    and a server icon, and any tab can be given a colour from its right-click
+    menu; the colour is kept with the saved tab session.
+  - |
+    Refreshed server manager (search field, colour dots, connection details,
+    empty state, SFTP button) and SFTP panel (coloured header, clickable path
+    bar, file type icons, transfer hint).
+fixes:
+  - |
+    Connecting for the first time to a server with a saved password failed,
+    because sshpass does not answer ssh's unknown host key question. The tab
+    now lets ssh ask the user (showing the fingerprint) and then logs in; a
+    changed host key is explained instead of failing silently.

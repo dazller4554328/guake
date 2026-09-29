@@ -85,6 +85,8 @@ from guake.sftp import build_sftp_argv
 from guake.servers import SERVERS_FILENAME
 from guake.servers import ServerStore
 from guake.servers import SSH_CONFIG_ID_PREFIX
+from guake.servers import LaunchMessages
+from guake.tabcolors import is_valid_color
 from guake.servers import build_launch
 from guake.servers import parse_ssh_config
 
@@ -1332,10 +1334,14 @@ class Guake(SimpleGladeApp):
             server.name,
             server.target,
         )
-        _box, _page_num, terminal = self.get_notebook().new_page_with_focus(
+        _box, page_num, terminal = self.get_notebook().new_page_with_focus(
             None, label or server.name, user_set, position=position, argv=argv, envv=envv
         )
         terminal.server_id = server.id
+        notebook = self.get_notebook()
+        tab_label = notebook.get_tab_label(notebook.get_nth_page(page_num))
+        if hasattr(tab_label, "set_server"):
+            tab_label.set_server(server)
         if self.hidden and not deferred:
             self.show()
         return terminal
@@ -1348,18 +1354,30 @@ class Guake(SimpleGladeApp):
             password = serversecrets.lookup_password(server.id)
             if password is None:
                 log.warning("No password found in the keyring for server %s", server.name)
-        return build_launch(
-            server,
-            password,
-            closed_message=_("Connection to {name} closed (exit status {status})."),
+        messages = LaunchMessages(
+            closed=_("Connection to {name} closed (exit status {status})."),
             reconnect_prompt=_("Press r then Enter to reconnect, or Enter to close this tab: "),
-            no_sshpass_message=_(
+            no_sshpass=_(
                 "[Guake] 'sshpass' is not installed, so the saved password cannot be "
                 "used. Enter it manually or install sshpass."
             ),
-            deferred=deferred,
-            restored_message=_("Tab for {name} restored, not connected yet."),
+            restored=_("Tab for {name} restored, not connected yet."),
+            hostkey_unknown=_(
+                "[Guake] First connection to {name}: ssh does not know this server yet. "
+                "Check the fingerprint below and type yes to trust it."
+            ),
+            hostkey_rejected=_(
+                "[Guake] The host key is not trusted, so the saved password was not sent. "
+                "Press r to be asked again."
+            ),
+            hostkey_changed=_(
+                "[Guake] WARNING: THE HOST KEY HAS CHANGED since you last connected. "
+                "Someone could be intercepting the connection, so the saved password "
+                "was not sent. If the server was reinstalled, remove the old key with: "
+                "{command}"
+            ),
         )
+        return build_launch(server, password, messages=messages, deferred=deferred)
 
     def show_server_error(self, text, secondary):
         """Modal error box on top of Guake (the window is kept from auto-hiding)."""
@@ -1550,6 +1568,13 @@ class Guake(SimpleGladeApp):
             self.get_notebook().set_tab_pos(Gtk.PositionType.TOP)
         else:
             self.get_notebook().set_tab_pos(Gtk.PositionType.BOTTOM)
+        # The colour bar sits on the edge facing the terminal.
+        self.get_notebook().refresh_tab_colors()
+
+    def refresh_server_tabs(self):
+        """Repaint the tabs after servers were edited (name, colour...)."""
+        for notebook in self.notebook_manager.iter_notebooks():
+            notebook.refresh_tab_colors()
 
     def execute_hook(self, event_name):
         """Execute shell commands related to current event_name"""
@@ -1602,6 +1627,7 @@ class Guake(SimpleGladeApp):
                             "panes": panes,
                             "label": nb.get_tab_text_index(index),
                             "custom_label_set": getattr(page, "custom_label_set", False),
+                            "color": getattr(nb.get_tab_label(page), "user_color", ""),
                         }
                     )
                 except FileNotFoundError:
@@ -1708,6 +1734,11 @@ class Guake(SimpleGladeApp):
                                 else tab.get("directory", None)
                             )
                             nb.new_page_with_focus(directory, tab["label"], tab["custom_label_set"])
+                        color = tab.get("color", "")
+                        if is_valid_color(color):
+                            label = nb.get_tab_label(nb.get_nth_page(nb.get_current_page()))
+                            if hasattr(label, "set_user_color"):
+                                label.set_user_color(color)
 
                     # Remove original pages in notebook
                     for i in range(current_pages):

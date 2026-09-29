@@ -20,6 +20,8 @@ from guake.globals import PCRE2_MULTILINE
 from guake.menus import mk_tab_context_menu
 from guake.menus import mk_terminal_context_menu
 from guake.sftppanel import SftpPanel
+from guake.tabcolors import auto_color
+from guake.tabcolors import tab_css
 from guake.utils import HidePrevention
 from guake.utils import TabNameUtils
 from guake.utils import get_server_time
@@ -225,11 +227,14 @@ class RootTerminalBox(Gtk.Overlay, TerminalHolder):
                 self.sftp_panel.view.grab_focus()
                 return self.sftp_panel
             self.close_sftp_panel(self.sftp_panel)
+        port = f":{server.port}" if server.port != 22 else ""
         panel = SftpPanel(
             self.guake.window,
             server.name,
             self.guake.sftp_session_factory(server),
             self.close_sftp_panel,
+            color=server.color or auto_color(server.id),
+            subtitle=f"{server.target}{port}",
         )
         panel.server_id = server.id
         self.sftp_panel = panel
@@ -735,7 +740,13 @@ class TabLabelEventBox(Gtk.EventBox):
         self.notebook = notebook
         self._text = text
         self._activity = False
-        self.box = Gtk.Box(homogeneous=Gtk.Orientation.HORIZONTAL, spacing=0, visible=True)
+        self._active = False
+        # Colour chosen from the tab menu; wins over the server's colour.
+        self.user_color = ""
+        self.server = None
+        self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, visible=True)
+        self.icon = Gtk.Image.new_from_icon_name("network-server-symbolic", Gtk.IconSize.MENU)
+        self.icon.set_no_show_all(True)
         self.label = Gtk.Label(label=text, visible=True)
         self.close_button = Gtk.Button(
             image=Gtk.Image.new_from_icon_name("window-close", Gtk.IconSize.MENU),
@@ -745,10 +756,16 @@ class TabLabelEventBox(Gtk.EventBox):
         settings.general.bind(
             "tab-close-buttons", self.close_button, "visible", Gio.SettingsBindFlags.GET
         )
+        self.box.pack_start(self.icon, False, False, 0)
         self.box.pack_start(self.label, True, True, 0)
         self.box.pack_end(self.close_button, False, False, 0)
+        self._css = Gtk.CssProvider()
+        self.box.get_style_context().add_provider(
+            self._css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
         self.add(self.box)
         self.connect("button-press-event", self.on_button_press, self.label)
+        self._render_color()
 
     def set_text(self, text):
         self._text = text
@@ -756,6 +773,49 @@ class TabLabelEventBox(Gtk.EventBox):
 
     def get_text(self):
         return self._text
+
+    # -- colour ----------------------------------------------------------------
+
+    @property
+    def color(self):
+        """The colour painted on the tab: the user's pick, else the server's
+        own colour, else an automatic one for server tabs, else none."""
+        if self.user_color:
+            return self.user_color
+        if self.server is not None:
+            return self.server.color or auto_color(self.server.id)
+        return ""
+
+    def set_server(self, server):
+        """Mark the tab as connected to ``server`` (icon, colour, tooltip)."""
+        self.server = server
+        self.icon.set_visible(server is not None)
+        self.set_tooltip_text(
+            _("Connected to {name} ({target})").format(name=server.name, target=server.target)
+            if server is not None
+            else None
+        )
+        self._render_color()
+
+    def set_user_color(self, color):
+        self.user_color = color or ""
+        self._render_color()
+
+    def set_active(self, active):
+        """Called when the tab becomes (or stops being) the current one."""
+        if self._active != bool(active):
+            self._active = bool(active)
+            self._render_color()
+
+    def refresh_color(self):
+        """Repaint, e.g. after the tab bar moved to the other edge."""
+        self._render_color()
+
+    def _render_color(self):
+        tabs_at_bottom = self.notebook.get_tab_pos() == Gtk.PositionType.BOTTOM
+        self._css.load_from_data(tab_css(self.color, self._active, tabs_at_bottom).encode())
+
+    # -- activity ----------------------------------------------------------------
 
     def set_activity(self, active):
         """Highlight (or clear) this tab's title to signal unseen output.
@@ -824,6 +884,10 @@ class TabLabelEventBox(Gtk.EventBox):
         HidePrevention(self.get_toplevel()).allow()
 
         self.grab_focus_on_last_focused_terminal()
+
+    @save_tabs_when_changed
+    def on_tab_color(self, menu_item, color):
+        self.set_user_color(color)
 
     @save_tabs_when_changed
     def on_reset_custom_colors(self, user_data):

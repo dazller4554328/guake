@@ -8,28 +8,39 @@ are kept in the desktop keyring through :mod:`guake.serversecrets`.
 """
 
 import logging
+import math
 import os
 import shlex
 
+import cairo
 import gi
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib
+from gi.repository import Gdk
 from gi.repository import Gtk
 from gi.repository import Pango
 
 from guake import serversecrets
+from guake.menus import color_swatch
+from guake.serverbackupdialogs import export_servers
+from guake.serverbackupdialogs import import_servers
 from guake.servers import DEFAULT_SSH_PORT
 from guake.servers import Server
 from guake.servers import as_saved_server
 from guake.servers import group_servers
 from guake.servers import parse_ssh_config
+from guake.tabcolors import PALETTE
+from guake.tabcolors import auto_color
 from guake.utils import HidePrevention
 
 log = logging.getLogger(__name__)
 
-COLUMN_ID, COLUMN_NAME, COLUMN_DETAIL, COLUMN_WEIGHT = range(4)
+COLUMN_ID, COLUMN_NAME, COLUMN_DETAIL, COLUMN_WEIGHT, COLUMN_COLOR, COLUMN_SUBTITLE = range(6)
 ENTRY_WIDTH_CHARS = 40
+SWATCH_SIZE = 12
+COLOR_SWATCH_SIZE = 18
+_SWATCH_CACHE = {}
 
 
 def _show_message(parent, message_type, text, secondary=None, buttons=Gtk.ButtonsType.OK):
@@ -88,6 +99,7 @@ class ServerEditDialog(Gtk.Dialog):
         self.group_entry.set_text(server.group if server else "")
         self.group_entry.set_placeholder_text(_("Optional, e.g. Production"))
         self._add_row(_("Group"), self.group_combo)
+        self._add_row(_("Tab color"), self._build_color_picker(server.color if server else ""))
         self.host_entry = self._add_entry(
             _("Host"), server.host if server else "", _("Host name or IP address")
         )
@@ -157,6 +169,31 @@ class ServerEditDialog(Gtk.Dialog):
         self._row += 1
         return widget
 
+    def _build_color_picker(self, current):
+        """A row of round colour buttons; "Auto" picks a colour from the name."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        self.color_buttons = {}
+        group = None
+        choices = [("", _("Automatic"))] + [(c, _(n)) for n, c in PALETTE]
+        if current and current not in {c for _n, c in PALETTE}:
+            # A colour set outside the palette (servers.json, a backup) stays pickable.
+            choices.append((current, _("Custom {color}").format(color=current)))
+        for color, name in choices:
+            button = Gtk.RadioButton(group=group, draw_indicator=False, relief=Gtk.ReliefStyle.NONE)
+            group = group or button
+            if color:
+                button.add(color_swatch(color, size=COLOR_SWATCH_SIZE))
+            else:
+                button.set_label(_("Auto"))
+            button.set_tooltip_text(name)
+            button.set_active(color == current)
+            box.pack_start(button, False, False, 0)
+            self.color_buttons[color] = button
+        return box
+
+    def selected_color(self):
+        return next((c for c, b in self.color_buttons.items() if b.get_active()), "")
+
     def _add_entry(self, label_text, text, placeholder):
         entry = Gtk.Entry(text=text, activates_default=True, width_chars=ENTRY_WIDTH_CHARS)
         entry.set_placeholder_text(placeholder)
@@ -225,6 +262,7 @@ class ServerEditDialog(Gtk.Dialog):
             options=self.options_entry.get_text().strip(),
             command=self.command_entry.get_text().strip(),
             use_password=use_password,
+            color=self.selected_color(),
         )
 
     def run_and_save(self):
@@ -269,67 +307,235 @@ class ServerEditDialog(Gtk.Dialog):
         return had_password
 
 
+def _swatch_pixbuf(color, size=SWATCH_SIZE):
+    """A round colour dot for tree views (cached per colour)."""
+    if color not in _SWATCH_CACHE:
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+        cr = cairo.Context(surface)
+        rgba = Gdk.RGBA()
+        rgba.parse(color)
+        cr.set_source_rgba(rgba.red, rgba.green, rgba.blue, 1)
+        cr.arc(size / 2, size / 2, size / 2 - 1, 0, 2 * math.pi)
+        cr.fill()
+        _SWATCH_CACHE[color] = Gdk.pixbuf_get_from_surface(surface, 0, 0, size, size)
+    return _SWATCH_CACHE[color]
+
+
+def _icon_button(icon_name, tooltip, callback, label=None):
+    button = Gtk.Button(label=label, always_show_image=bool(label))
+    button.set_image(Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON))
+    button.set_tooltip_text(tooltip)
+    button.connect("clicked", callback)
+    return button
+
+
+def server_subtitle(server):
+    """Second line of a server row: where it connects and how it logs in."""
+    parts = [server_detail(server)]
+    if server.use_password:
+        parts.append(_("password"))
+    if server.identity_file:
+        parts.append(_("key {name}").format(name=os.path.basename(server.identity_file)))
+    if server.jump_host:
+        parts.append(_("via {host}").format(host=server.jump_host))
+    return " \u00b7 ".join(parts)
+
+
 class ServersDialog(Gtk.Dialog):
-    """The servers manager: lists saved servers grouped by group name.
-    Double-click (or Connect) opens a tab connected to the server."""
+    """The servers manager: lists saved servers grouped by group name, with
+    a search field. Double-click (or Connect) opens a tab connected to the
+    server. The header bar menu imports and exports backups."""
 
     def __init__(self, guake, add_new=False):
         super().__init__(
-            _("Servers"),
-            guake.window,
-            Gtk.DialogFlags.DESTROY_WITH_PARENT,
-            (Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE),
+            title=_("Servers"),
+            transient_for=guake.window,
+            destroy_with_parent=True,
+            use_header_bar=True,
         )
         self.guake = guake
         self.store = guake.servers
         self.add_new = add_new
-        self.set_default_size(560, 420)
+        self.set_default_size(620, 480)
+        self._build_header_bar()
 
-        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, border_width=12)
-        self.get_content_area().pack_start(content, True, True, 0)
+        content = self.get_content_area()
+        content.set_spacing(0)
+        self.search_entry = Gtk.SearchEntry(
+            placeholder_text=_("Search by name, host, user or group"), margin=12, margin_bottom=6
+        )
+        self.search_entry.connect("search-changed", self.on_search_changed)
+        content.pack_start(self.search_entry, False, False, 0)
 
-        self.model = Gtk.TreeStore(str, str, str, int)
-        self.view = Gtk.TreeView(model=self.model)
-        self.view.set_enable_search(True)
+        self.model = Gtk.TreeStore(str, str, str, int, str, str)
+        self.filter = self.model.filter_new()
+        self.filter.set_visible_func(self._row_visible)
+        self.view = Gtk.TreeView(model=self.filter, headers_visible=False, enable_search=False)
+        self.view.get_style_context().add_class("guake-servers")
         self.view.set_search_column(COLUMN_NAME)
-        name_renderer = Gtk.CellRendererText()
-        name_column = Gtk.TreeViewColumn(
-            _("Name"), name_renderer, text=COLUMN_NAME, weight=COLUMN_WEIGHT
-        )
-        name_column.set_expand(True)
-        self.view.append_column(name_column)
-        self.view.append_column(
-            Gtk.TreeViewColumn(_("Connection"), Gtk.CellRendererText(), text=COLUMN_DETAIL)
-        )
+        column = Gtk.TreeViewColumn()
+        swatch = Gtk.CellRendererPixbuf(xpad=6)
+        column.pack_start(swatch, False)
+        column.set_cell_data_func(swatch, self._render_swatch)
+        text = Gtk.CellRendererText(ypad=6, ellipsize=Pango.EllipsizeMode.END)
+        column.pack_start(text, True)
+        column.set_cell_data_func(text, self._render_text)
+        column.set_expand(True)
+        self.view.append_column(column)
         self.view.connect("row-activated", self.on_row_activated)
         self.view.get_selection().connect("changed", self.on_selection_changed)
-        scrolled = Gtk.ScrolledWindow(shadow_type=Gtk.ShadowType.IN)
-        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled = Gtk.ScrolledWindow(shadow_type=Gtk.ShadowType.IN, margin_start=12, margin_end=12)
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scrolled.add(self.view)
-        content.pack_start(scrolled, True, True, 0)
 
-        buttons = Gtk.ButtonBox(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        buttons.set_layout(Gtk.ButtonBoxStyle.START)
-        self.connect_button = self._add_button(buttons, _("Connect"), self.on_connect)
-        self.add_button_ = self._add_button(buttons, _("Add..."), self.on_add)
-        self.edit_button = self._add_button(buttons, _("Edit..."), self.on_edit)
-        self.remove_button = self._add_button(buttons, _("Remove"), self.on_remove)
-        self.import_button = self._add_button(buttons, _("Import ~/.ssh/config"), self.on_import)
-        self.import_button.set_tooltip_text(
-            _("Save every host declared in your ssh client config as a server")
-        )
-        content.pack_start(buttons, False, False, 0)
+        # A stack only switches to visible children, so show them up front.
+        empty_state = self._build_empty_state()
+        scrolled.show_all()
+        empty_state.show_all()
+        self.stack = Gtk.Stack(vexpand=True)
+        self.stack.add_named(scrolled, "list")
+        self.stack.add_named(empty_state, "empty")
+        content.pack_start(self.stack, True, True, 0)
+        content.pack_start(self._build_action_bar(), False, False, 0)
 
         self.connect("response", lambda dialog, response: dialog.destroy())
         self.connect("destroy", self.on_destroy)
         self.refresh()
 
+    # -- layout ------------------------------------------------------------------
+
+    def _build_header_bar(self):
+        header = self.get_header_bar()
+        self.add_button_ = _icon_button("list-add-symbolic", _("Add a server"), self.on_add)
+        header.pack_start(self.add_button_)
+
+        menu = Gtk.Menu()
+        self.import_button = self._menu_item(
+            menu, _("Import hosts from ~/.ssh/config"), self.on_import
+        )
+        self.import_button.set_tooltip_text(
+            _("Save every host declared in your ssh client config as a server")
+        )
+        menu.append(Gtk.SeparatorMenuItem())
+        self.import_backup_item = self._menu_item(
+            menu, _("Import backup..."), self.on_import_backup
+        )
+        self.export_backup_item = self._menu_item(
+            menu, _("Export backup..."), self.on_export_backup
+        )
+        menu.show_all()
+        self.more_button = Gtk.MenuButton(popup=menu, tooltip_text=_("Import and export"))
+        self.more_button.set_image(
+            Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON)
+        )
+        header.pack_end(self.more_button)
+
     @staticmethod
-    def _add_button(box, label, callback):
-        button = Gtk.Button(label=label)
-        button.connect("clicked", callback)
-        box.pack_start(button, False, False, 0)
-        return button
+    def _menu_item(menu, label, callback):
+        item = Gtk.MenuItem(label=label)
+        item.connect("activate", callback)
+        menu.append(item)
+        return item
+
+    def _build_action_bar(self):
+        bar = Gtk.ActionBar()
+        self.edit_button = _icon_button(
+            "document-edit-symbolic", _("Edit the server"), self.on_edit, _("Edit")
+        )
+        self.remove_button = _icon_button(
+            "user-trash-symbolic", _("Remove the server"), self.on_remove, _("Remove")
+        )
+        self.sftp_button = _icon_button(
+            "folder-remote-symbolic", _("Browse files over SFTP"), self.on_sftp, _("Files")
+        )
+        self.connect_button = _icon_button(
+            "utilities-terminal-symbolic",
+            _("Open a tab logged into the server"),
+            self.on_connect,
+            _("Connect"),
+        )
+        self.connect_button.get_style_context().add_class("suggested-action")
+        bar.pack_start(self.edit_button)
+        bar.pack_start(self.remove_button)
+        bar.pack_end(self.connect_button)
+        bar.pack_end(self.sftp_button)
+        return bar
+
+    def _build_empty_state(self):
+        box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=12, valign=Gtk.Align.CENTER, margin=24
+        )
+        icon = Gtk.Image.new_from_icon_name("network-server-symbolic", Gtk.IconSize.DIALOG)
+        icon.set_pixel_size(64)
+        icon.get_style_context().add_class("dim-label")
+        title = Gtk.Label()
+        title.set_markup(f"<big><b>{GLib.markup_escape_text(_('No saved servers yet'))}</b></big>")
+        hint = Gtk.Label(
+            label=_(
+                "Add a server, or bring your servers over from another machine with "
+                "Import backup... in the menu at the top right."
+            ),
+            wrap=True,
+            max_width_chars=48,
+            justify=Gtk.Justification.CENTER,
+        )
+        hint.get_style_context().add_class("dim-label")
+        add = Gtk.Button(label=_("Add a server"), halign=Gtk.Align.CENTER)
+        add.get_style_context().add_class("suggested-action")
+        add.connect("clicked", self.on_add)
+        for widget in (icon, title, hint, add):
+            box.pack_start(widget, False, False, 0)
+        return box
+
+    # -- rendering -------------------------------------------------------------
+
+    def _render_swatch(self, column, cell, model, tree_iter, data):
+        if model[tree_iter][COLUMN_ID]:
+            cell.set_property("icon-name", None)
+            cell.set_property("pixbuf", _swatch_pixbuf(model[tree_iter][COLUMN_COLOR]))
+        else:
+            cell.set_property("pixbuf", None)
+            cell.set_property("icon-name", "folder-symbolic")
+
+    def _render_text(self, column, cell, model, tree_iter, data):
+        row = model[tree_iter]
+        name = GLib.markup_escape_text(row[COLUMN_NAME])
+        if row[COLUMN_ID]:
+            subtitle = GLib.markup_escape_text(row[COLUMN_SUBTITLE])
+            markup = f'<b>{name}</b>\n<small><span alpha="65%">{subtitle}</span></small>'
+        else:
+            count = model.iter_n_children(tree_iter)
+            markup = f'<b>{name}</b>  <small><span alpha="65%">{count}</span></small>'
+        cell.set_property("markup", markup)
+
+    def _row_visible(self, model, tree_iter, data):
+        query = (
+            self.search_entry.get_text().strip().lower() if hasattr(self, "search_entry") else ""
+        )
+        if not query:
+            return True
+        row = model[tree_iter]
+        if not row[COLUMN_ID]:
+            if query in row[COLUMN_NAME].lower():
+                return True
+            return any(self._matches(child, query) for child in row.iterchildren())
+        parent = model.iter_parent(tree_iter)
+        if parent is not None and query in model[parent][COLUMN_NAME].lower():
+            return True
+        return self._matches(row, query)
+
+    @staticmethod
+    def _matches(row, query):
+        return query in row[COLUMN_NAME].lower() or query in row[COLUMN_SUBTITLE].lower()
+
+    def on_search_changed(self, entry):
+        self.filter.refilter()
+        self.view.expand_all()
+        first = self.filter.get_iter_first()
+        if first is not None and entry.get_text():
+            while self.filter.iter_has_child(first) and not self.filter[first][COLUMN_ID]:
+                first = self.filter.iter_children(first)
+            self.view.set_cursor(self.filter.get_path(first), None, False)
 
     def present_dialog(self):
         """Show the manager on top of Guake without letting Guake auto-hide."""
@@ -347,20 +553,35 @@ class ServersDialog(Gtk.Dialog):
 
     def refresh(self, select_id=None):
         self.model.clear()
-        select_path = None
-        for group, members in group_servers(self.store.servers):
+        select_iter = None
+        servers = self.store.servers
+        for group, members in group_servers(servers):
             parent = None
             if group:
-                parent = self.model.append(None, ["", group, "", Pango.Weight.BOLD])
+                parent = self.model.append(None, ["", group, "", Pango.Weight.BOLD, "", ""])
             for server in members:
                 row = self.model.append(
-                    parent, [server.id, server.name, server_detail(server), Pango.Weight.NORMAL]
+                    parent,
+                    [
+                        server.id,
+                        server.name,
+                        server_detail(server),
+                        Pango.Weight.NORMAL,
+                        server.color or auto_color(server.id),
+                        server_subtitle(server),
+                    ],
                 )
                 if server.id == select_id:
-                    select_path = self.model.get_path(row)
+                    select_iter = row
+        self.filter.refilter()
         self.view.expand_all()
-        if select_path is not None:
-            self.view.set_cursor(select_path, None, False)
+        if select_iter is not None:
+            path = self.filter.convert_child_path_to_path(self.model.get_path(select_iter))
+            if path is not None:
+                self.view.set_cursor(path, None, False)
+        self.stack.set_visible_child_name("list" if servers else "empty")
+        self.search_entry.set_sensitive(bool(servers))
+        self.export_backup_item.set_sensitive(bool(servers))
         self.on_selection_changed(self.view.get_selection())
         self.import_button.set_sensitive(bool(parse_ssh_config()))
 
@@ -372,7 +593,7 @@ class ServersDialog(Gtk.Dialog):
 
     def on_selection_changed(self, selection):
         has_server = self.selected_server() is not None
-        for button in (self.connect_button, self.edit_button, self.remove_button):
+        for button in (self.connect_button, self.sftp_button, self.edit_button, self.remove_button):
             button.set_sensitive(has_server)
 
     def on_row_activated(self, view, path, column):
@@ -392,6 +613,13 @@ class ServersDialog(Gtk.Dialog):
         self.guake.connect_to_server(server)
         self.response(Gtk.ResponseType.CLOSE)
 
+    def on_sftp(self, *args):
+        server = self.selected_server()
+        if server is None:
+            return
+        self.response(Gtk.ResponseType.CLOSE)
+        self.guake.open_sftp_panel(server)
+
     def on_add(self, *args):
         dialog = ServerEditDialog(self, self.store)
         server = dialog.run_and_save()
@@ -407,6 +635,8 @@ class ServersDialog(Gtk.Dialog):
         saved = dialog.run_and_save()
         dialog.destroy()
         self.refresh(select_id=saved.id if saved else server.id)
+        if saved is not None and hasattr(self.guake, "refresh_server_tabs"):
+            self.guake.refresh_server_tabs()
 
     def on_remove(self, *args):
         server = self.selected_server()
@@ -443,3 +673,14 @@ class ServersDialog(Gtk.Dialog):
                 _("Every host in ~/.ssh/config is already saved."),
             )
         self.refresh(select_id=added[0].id if added else None)
+
+    def on_export_backup(self, *args):
+        export_servers(self, self.store.servers)
+
+    def on_import_backup(self, *args):
+        summary = import_servers(self, self.store)
+        if summary is not None:
+            changed = [*summary.added, *summary.updated]
+            self.refresh(select_id=changed[0].id if changed else None)
+            if hasattr(self.guake, "refresh_server_tabs"):
+                self.guake.refresh_server_tabs()
