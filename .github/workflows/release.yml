@@ -1,81 +1,68 @@
 # .github/workflows/release.yml
+#
+# Build a .deb with scripts/build-deb.sh and attach it to a GitHub Release.
+# Triggered by pushing a tag like v3.10.2 (or manually from the Actions tab).
 
 name: Release
-
 
 on:
   push:
     tags:
-      - '**'
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release (e.g. v3.10.2)'
+        required: true
 
+permissions:
+  contents: write
 
 jobs:
-  release:
-
+  deb:
     runs-on: ubuntu-latest
+
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Get tag
-        id: tag
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
 
-      - name: Checkout the current branch
+      - name: Install build dependencies
         run: |
-          echo "BRANCH=$(echo $GITHUB_REF | cut -d'/' -f 3)" >> $GITHUB_ENV
-          git config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*
-          git fetch --unshallow --tags
-          git tag
-          if [[ $(git rev-parse --abbrev-ref HEAD) == "master" ]]; then
-              echo "reattaching HEAD on master"
-              git symbolic-ref --short HEAD || git checkout -b ${GITHUB_ENV}-test $GITHUB_ENV
+          sudo apt-get update -q
+          sudo apt-get install --no-install-recommends -y \
+            gettext \
+            libglib2.0-bin \
+            make \
+            python3 \
+            python3-pip \
+            python3-setuptools \
+            python3-setuptools-scm \
+            python3-wheel \
+            python3-packaging
+
+      - name: Build .deb
+        run: ./scripts/build-deb.sh "${TAG#v}"
+
+      - name: Smoke test (install the package on the runner)
+        run: |
+          sudo apt-get install -y xvfb ./dist/guake_*_all.deb
+          dpkg -L guake | grep -q '^/usr/lib/python3/dist-packages/guake/paths.py$'
+          python3 -c 'import guake.paths as p; assert p.GLADE_DIR == "/usr/share/guake", p.GLADE_DIR'
+          xvfb-run -a guake --version
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/guake_*_all.deb --clobber
+          else
+            gh release create "$TAG" dist/guake_*_all.deb \
+              --title "Guake $TAG" \
+              --generate-notes
           fi
-
-          sudo apt update -q
-          yes | sudo ./scripts/bootstrap-dev-debian.sh
-          ./scripts/bootstrap-dev-pip.sh system
-
-          export DISPLAY=:99.0
-
-      - name: Set env
-        if: startsWith(github.ref, 'refs/tags')
-        run: echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_GUAKE=$(echo $GITHUB_REF_NAME)" >> $GITHUB_ENV
-
-      - name: Build
-        if: startsWith(github.ref, 'refs/tags')
-        run: |
-          echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_GUAKE=$SETUPTOOLS_SCM_PRETEND_VERSION_FOR_GUAKE"
-          set -e
-          mkdir test-rtd
-          virtualenv test-rtd
-          . ./test-rtd/bin/activate
-          pip install -r requirements-dev.txt
-          rm -rf test-rtd
-
-          # for dev
-          make dev-actions
-          pipenv run pip install pycairo "pygobject<3.52"
-          # check
-          make build
-          # prepare for deployment
-          make generate-paths
-
-      - name: Publish distribution 📦 to Test PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          verify-metadata: false
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
-          repository-url: https://test.pypi.org/legacy/
-
-      - name: Publish distribution 📦 to PyPI
-        if: startsWith(github.ref, 'refs/tags')
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          verify-metadata: false
-          password: ${{ secrets.PYPI_API_TOKEN }}
