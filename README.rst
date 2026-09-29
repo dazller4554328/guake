@@ -55,9 +55,9 @@ transfer*.
 Installation
 ============
 
-This fork is not in any distribution's package repository. On Debian, Ubuntu, Mint and
-other Debian-based systems the easiest way is the ``.deb`` attached to each GitHub release;
-everywhere else, build it from source (about five minutes).
+This fork is not in any distribution's package repository. Each GitHub release has a
+``.deb`` for Debian, Ubuntu, Mint and friends and an ``.rpm`` for Fedora; everywhere else,
+build it from source (about five minutes).
 
 Install from the .deb (Debian / Ubuntu / Mint)
 ----------------------------------------------
@@ -78,6 +78,24 @@ shadow the packaged one. Remove it again with ``sudo apt remove guake``.
 
 To build the package yourself from a checkout, run ``./scripts/build-deb.sh``; the result
 lands in ``dist/``.
+
+Install from the .rpm (Fedora)
+------------------------------
+
+Download ``guake-<version>.noarch.rpm`` from the same
+`Releases page <https://github.com/dazller4554328/guake/releases>`_ and install it with
+``dnf``, which pulls in the dependencies and replaces Fedora's own ``guake`` package:
+
+.. code-block:: bash
+
+   sudo dnf install ./guake-*.noarch.rpm
+
+It works on every current Fedora release (tested on 42 and 44). ``sshpass``, ``libsecret``
+and ``python3-cryptography`` are installed too as weak dependencies unless you disabled
+those. Remove it with ``sudo dnf remove guake``.
+
+To build it yourself, run ``./scripts/build-rpm.sh`` on Fedora (with ``rpm-build``
+installed) or ``./scripts/build-rpm.sh --docker`` anywhere Docker runs.
 
 Build from source
 -----------------

@@ -1,7 +1,9 @@
 # .github/workflows/release.yml
 #
-# Build a .deb with scripts/build-deb.sh and attach it to a GitHub Release.
-# Triggered by pushing a tag like v3.10.2 (or manually from the Actions tab).
+# Build the .deb (scripts/build-deb.sh) and the .rpm (scripts/build-rpm.sh),
+# install each one on its distribution as a smoke test, and attach both to a
+# GitHub Release. Triggered by pushing a tag like v3.10.2 (or manually from
+# the Actions tab: `gh workflow run Release -f tag=v3.10.2`).
 
 name: Release
 
@@ -18,13 +20,12 @@ on:
 permissions:
   contents: write
 
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
   deb:
     runs-on: ubuntu-latest
-
-    env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,14 +58,60 @@ jobs:
           python3 -c 'import guake.paths as p; assert p.GLADE_DIR == "/usr/share/guake", p.GLADE_DIR'
           xvfb-run -a guake --version
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: dist/guake_*_all.deb
+
+  rpm:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf install -y -q rpm-build make gettext glib2 git findutils python3 python3-pip \
+            python3-setuptools python3-setuptools_scm python3-wheel python3-packaging
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+
+      - name: Build .rpm
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ./scripts/build-rpm.sh "${TAG#v}"
+
+      - name: Smoke test (install the package in the container)
+        run: |
+          dnf install -y -q ./dist/guake-*.noarch.rpm xorg-x11-server-Xvfb
+          cd /tmp
+          rpm -ql guake | grep -q '^/usr/share/guake/python/guake/paths.py$'
+          xvfb-run -a guake --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: dist/guake-*.noarch.rpm
+
+  release:
+    needs: [deb, rpm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/guake_*_all.deb --clobber
+            gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" dist/guake_*_all.deb \
+            gh release create "$TAG" dist/* \
               --title "Guake $TAG" \
               --generate-notes
           fi

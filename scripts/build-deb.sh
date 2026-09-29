@@ -44,149 +44,24 @@ for tool in dpkg-deb make msgfmt glib-compile-schemas "$PYTHON"; do
     command -v "$tool" >/dev/null 2>&1 || die "'$tool' is required but not installed"
 done
 
-# --------------------------------------------------------------------------
-# Version
-# --------------------------------------------------------------------------
-derive_version() {
-    local described
-    if described="$(git -C "$ROOT_DIR" describe --tags 2>/dev/null)"; then
-        # v3.10.2 -> 3.10.2 ; v3.10.2-4-gabc123 -> 3.10.2+4.gabc123
-        described="${described#v}"
-        echo "$described" | sed -E 's/-([0-9]+)-g([0-9a-f]+)$/+\1.g\2/'
-        return
-    fi
-    local date sha
-    date="$(git -C "$ROOT_DIR" log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)"
-    sha="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo nogit)"
-    echo "${BASE_VERSION}+fork.${date}.${sha}"
-}
+
+# shellcheck source=scripts/lib/stage-guake.sh
+. "$ROOT_DIR/scripts/lib/stage-guake.sh"
 
 VERSION="${1:-$(derive_version)}"
 VERSION="${VERSION#v}"
 # Debian: must start with a digit, then alphanumerics and . + ~ - only.
 [[ "$VERSION" =~ ^[0-9][A-Za-z0-9.+~-]*$ ]] || die "'$VERSION' is not a valid Debian version"
-
-# PEP 440 version handed to setuptools_scm. Use VERSION when it is valid,
-# otherwise keep its leading release number and push the rest to a local label.
-PY_VERSION="$("$PYTHON" - "$VERSION" <<'EOF'
-import re, sys
-v = sys.argv[1]
-try:
-    from packaging.version import Version, InvalidVersion
-    try:
-        print(Version(v)); sys.exit(0)
-    except InvalidVersion:
-        pass
-except ImportError:
-    if re.fullmatch(r"\d+(\.\d+)*(\+[a-z0-9]+(\.[a-z0-9]+)*)?", v, re.I):
-        print(v); sys.exit(0)
-m = re.match(r"(\d+(?:\.\d+)*)(.*)", v)
-rest = re.sub(r"[^A-Za-z0-9]+", ".", m.group(2)).strip(".")
-print(m.group(1) + ("+" + rest if rest else ""))
-EOF
-)"
-
+PY_VERSION="$(pep440_version "$VERSION")"
 log "Debian version: $VERSION (python version: $PY_VERSION)"
 
-# --------------------------------------------------------------------------
-# Snapshot the source tree (tracked + untracked, non-ignored files)
-# --------------------------------------------------------------------------
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/guake-deb.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 SRC_DIR="$WORK_DIR/src"
 STAGE_DIR="$WORK_DIR/stage"
-mkdir -p "$SRC_DIR" "$STAGE_DIR"
-
-if [ -n "$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null)" ]; then
-    log "warning: working tree has uncommitted changes; they will be packaged"
-fi
-log "Copying source tree to $SRC_DIR"
-# Files deleted in the working tree are skipped; any other copy error aborts.
-while IFS= read -r -d '' file; do
-    [ -e "$ROOT_DIR/$file" ] || [ -L "$ROOT_DIR/$file" ] || continue
-    (cd "$ROOT_DIR" && cp -P --parents -- "$file" "$SRC_DIR") || die "cannot copy $file"
-done < <(git -C "$ROOT_DIR" ls-files -z --cached --others --exclude-standard)
-[ -f "$SRC_DIR/setup.py" ] || die "source snapshot failed"
-
-# --------------------------------------------------------------------------
-# Stage with the Makefile
-# --------------------------------------------------------------------------
-export SETUPTOOLS_SCM_PRETEND_VERSION="$PY_VERSION"
-export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_GUAKE="$PY_VERSION"
-# Debian/Ubuntu mark the system python as externally managed (PEP 668); we only
-# install into a --root staging dir, so this is safe.
-export PIP_BREAK_SYSTEM_PACKAGES=1
-# Never let pip "upgrade" (i.e. uninstall) a guake already installed on the
-# build host, and never pull dependencies into the package.
-export PIP_IGNORE_INSTALLED=1
-export PIP_NO_DEPS=1
-export PIP_DISABLE_PIP_VERSION_CHECK=1
-export PIP_NO_WARN_SCRIPT_LOCATION=1
-
-MAKE_ARGS=(PYTHON="$PYTHON" PREFIX=/usr DESTDIR="$STAGE_DIR" COMPILE_SCHEMA=0)
-
-log "Generating desktop files, paths, translations (make)"
-make -C "$SRC_DIR" PYTHON="$PYTHON" prepare-install >/dev/null
-
-log "Installing data files and translations into staging"
-make -C "$SRC_DIR" "${MAKE_ARGS[@]}" install-schemas install-locale >/dev/null
-
-# install-guake skips its `pip install -r requirements.txt` step because DESTDIR
-# is set; its update-desktop-database call is non-fatal. Its pip failure is
-# also swallowed, so the result is checked explicitly below.
-log "Installing the python package into staging (pip --root)"
-make -C "$SRC_DIR" "${MAKE_ARGS[@]}" install-guake
-
-# pip/Debian may pick /usr/local/lib/python3.X/dist-packages or
-# /usr/lib/python3.X/site-packages depending on the pip build. Move whatever it
-# produced to /usr/lib/python3/dist-packages.
-PKG_INIT="$(find "$STAGE_DIR" -path '*-packages/guake/__init__.py' -print -quit)"
-[ -n "$PKG_INIT" ] || die "pip did not install the guake package into staging"
-SITE_DIR="$(dirname "$(dirname "$PKG_INIT")")"
-if [ "$SITE_DIR" != "$STAGE_DIR/$PY_DEST" ]; then
-    log "Relocating ${SITE_DIR#"$STAGE_DIR"} -> /$PY_DEST"
-    mkdir -p "$STAGE_DIR/$PY_DEST"
-    cp -a "$SITE_DIR"/. "$STAGE_DIR/$PY_DEST/"
-    rm -rf "$SITE_DIR"
-fi
-# Entry-point scripts land in <prefix>/bin; move them if pip used /usr/local.
-if [ -d "$STAGE_DIR/usr/local/bin" ]; then
-    mkdir -p "$STAGE_DIR/usr/bin"
-    mv "$STAGE_DIR/usr/local/bin/"* "$STAGE_DIR/usr/bin/"
-fi
-# Drop now-empty leftovers (usr/local, usr/lib/python3.X, ...).
-find "$STAGE_DIR/usr" -depth -type d -empty -delete
-
-# Byte code, tests and pip bookkeeping that points at the temp build dir.
-PY_PKG="$STAGE_DIR/$PY_DEST/guake"
-find "$STAGE_DIR" -name __pycache__ -type d -prune -exec rm -rf {} +
-find "$STAGE_DIR" -name '*.py[co]' -delete
-rm -rf "$PY_PKG/tests"
-rm -f "$STAGE_DIR/$PY_DEST"/guake-*.dist-info/direct_url.json
-rm -f "$STAGE_DIR/$PY_DEST"/guake-*.dist-info/RECORD
-# Mark the distribution as dpkg-owned so `pip uninstall` leaves it alone.
-for installer in "$STAGE_DIR/$PY_DEST"/guake-*.dist-info/INSTALLER; do
-    echo dpkg >"$installer"
-done
-
-# paths.py must point at /usr/share, not the dev tree.
-grep -q '"/usr/share/guake"' "$PY_PKG/paths.py" \
-    || die "staged guake/paths.py does not point at /usr/share/guake"
-
-# --------------------------------------------------------------------------
-# Executables
-# --------------------------------------------------------------------------
-for exe in guake guake-toggle; do
-    [ -f "$STAGE_DIR/usr/bin/$exe" ] || die "missing /usr/bin/$exe in staging"
-    # pip writes the interpreter it ran with; force the system python3.
-    sed -i -e '1s|^#!.*python.*$|#!/usr/bin/python3|' "$STAGE_DIR/usr/bin/$exe"
-done
-# guake-prefs is not a setuptools entry point; provide the classic launcher.
-cat >"$STAGE_DIR/usr/bin/guake-prefs" <<'EOF'
-#!/bin/sh
-# Open the Guake preferences window.
-exec /usr/bin/guake --preferences "$@"
-EOF
+mkdir -p "$STAGE_DIR"
+snapshot_source "$SRC_DIR"
+stage_guake "$SRC_DIR" "$STAGE_DIR" "$PY_DEST" "$PY_VERSION" dpkg
 
 # --------------------------------------------------------------------------
 # Debian metadata
