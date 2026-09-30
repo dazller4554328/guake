@@ -180,6 +180,34 @@ when a different key already has that name or the path is outside
 ``~/.ssh``, to ``~/.ssh/guake-imported/``. Existing files are never
 overwritten.
 
+Sync between your devices (Tailscale)
+-------------------------------------
+
+When your computers are on the same `Tailscale <https://tailscale.com>`_
+account, the sync button (two arrows, next to *Add*) in the server manager
+brings the servers of your other devices over, on demand; nothing syncs by
+itself.
+
+1. On each computer that should be a source, open *Sync servers* once and
+   turn on *Share this computer's servers*. Guake then answers on its
+   Tailscale address (port 47655), only to other devices signed in as the
+   same Tailscale user; tagged devices and every other address are refused.
+2. On the computer you want to update, press the sync button. Guake asks all
+   your online devices for their list and shows every proposed change with
+   its values: *Add*, *Update* (old → new for each field) and *Delete*.
+3. Tick what you want and press *Apply*. Nothing is written before that.
+
+The newest edit of a server wins. Deletions are never ticked for you, and
+ticking one asks for a confirmation before anything is removed. So do
+additions that carry SSH options, a jump host or a remote command, and
+updates that would send a saved password to a changed host. Servers whose
+SSH options let ssh run a local program (``ProxyCommand``, ``LocalCommand``,
+``-F`` and similar) are refused outright. Sync pulls only: press the button
+on each computer you want up to date.
+
+Passwords and key files are never shared (use an encrypted backup for
+those); names, hosts, users, key paths, SSH options and commands are.
+
 When a connection ends the tab stays open, shows why, and offers to reconnect
 (press ``r`` then Enter) or close (Enter). Server tabs are part of the saved
 tab session too: after a Guake restart they come back, but wait for you to

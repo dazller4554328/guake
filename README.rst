@@ -37,6 +37,10 @@ What this fork adds
   saves every server to one file; *Import backup...* on another machine brings them all
   back. Saved passwords and private keys can go along, encrypted with a passphrase you
   choose.
+- **Sync servers between your computers over Tailscale** – press the sync button in
+  the server manager to pull the servers of your other devices on the same Tailscale
+  account. You review every change before it is applied, and deletions always ask for
+  confirmation. Passwords and keys stay on each machine.
 - **Coloured tabs** – each server tab gets its own colour (pick one per server, or per
   tab from the tab's right-click *Tab Color* menu) and a server icon, so you can tell
   production from the lab at a glance.

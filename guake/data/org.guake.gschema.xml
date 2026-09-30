@@ -161,6 +161,11 @@
             <summary>Start fullscreen.</summary>
             <description>When true, the program will start in fullscreen mode.</description>
         </key>
+        <key name="servers-sync-share" type="b">
+            <default>false</default>
+            <summary>Share saved servers with my other Tailscale devices</summary>
+            <description>When true, Guake answers server sync requests on this device's Tailscale address, and only from devices signed in to the same Tailscale account. Passwords and keys are never shared.</description>
+        </key>
         <key name="start-at-login" type="b">
             <default>false</default>
             <summary>Start when GNOME starts</summary>

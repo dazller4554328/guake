@@ -530,3 +530,87 @@ def test_backslashes_in_the_name_are_printed_literally(fake_ssh_bin):
     argv, _ = srv.build_launch(Server(name="a\\033[31mb", host="h"))
     result = run_wrapper(argv, "\n", fake_ssh_bin)
     assert "Connection to a\\033[31mb closed" in result.stdout
+
+
+# --- timestamps and tombstones (used by server sync) ----------------------------
+
+
+def test_store_stamps_added_and_changed_servers(store, web, mocker):
+    mocker.patch("guake.servers.time.time", return_value=100.0)
+    store.add(web)
+    assert store.get("web1").updated_at == 100.0
+    mocker.patch("guake.servers.time.time", return_value=200.0)
+    store.update(web.with_changes(host="10.0.0.6"))
+    assert store.get("web1").updated_at == 200.0
+
+
+def test_store_keeps_timestamp_when_saving_unchanged_server(store, web, mocker):
+    mocker.patch("guake.servers.time.time", return_value=100.0)
+    store.add(web)
+    mocker.patch("guake.servers.time.time", return_value=200.0)
+    store.update(web)
+    assert store.get("web1").updated_at == 100.0
+
+
+def test_updated_at_is_ignored_when_comparing_servers(web):
+    assert web.with_changes(updated_at=5.0) == web
+
+
+def test_remove_records_a_tombstone_that_survives_reload(store, web, mocker):
+    mocker.patch("guake.servers.time.time", return_value=100.0)
+    store.add(web)
+    store.remove("web1")
+    assert store.deleted == {"web1": srv.Tombstone(at=100.0, name="web-1")}
+    assert ServerStore(store.path).deleted == store.deleted
+
+
+def test_tombstone_is_dropped_when_server_comes_back(store, web):
+    store.add(web)
+    store.remove("web1")
+    store.add(web)
+    assert store.deleted == {}
+
+
+def test_old_tombstones_are_pruned(store, web, mocker):
+    mocker.patch("guake.servers.time.time", return_value=100.0)
+    store.add(web)
+    store.remove("web1")
+    mocker.patch("guake.servers.time.time", return_value=100.0 + srv.TOMBSTONE_MAX_AGE + 1)
+    store.add(Server(name="other", host="h"))
+    assert store.deleted == {}
+
+
+def test_apply_sync_keeps_incoming_timestamps_and_records_removals(store, web, mocker):
+    mocker.patch("guake.servers.time.time", return_value=100.0)
+    store.add(web)
+    db = Server(name="db", host="db.lan", id="db", updated_at=42.0)
+    store.apply_sync([db], {"web1": srv.Tombstone(at=50.0, name="web-1")})
+    assert [s.id for s in store.servers] == ["db"]
+    assert store.get("db").updated_at == 42.0
+    assert store.deleted["web1"].at == 50.0
+
+
+def test_load_ignores_malformed_tombstones_and_timestamps(tmp_path):
+    path = tmp_path / "servers.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "servers": [
+                    {"name": "ok", "host": "h", "updated_at": 3},
+                    {"name": "bad", "host": "h", "updated_at": "soon"},
+                ],
+                "deleted": {"x": {"at": -1}, "y": "nope", "z": {"at": 7, "name": "gone"}},
+            }
+        )
+    )
+    loaded = srv.load_servers_file(path)
+    assert [(s.name, s.updated_at) for s in loaded.servers] == [("ok", 3.0)]
+    assert loaded.deleted == {"z": srv.Tombstone(at=7.0, name="gone")}
+
+
+def test_file_without_sync_fields_still_loads(tmp_path):
+    path = tmp_path / "servers.json"
+    path.write_text(json.dumps({"schema_version": 1, "servers": [{"name": "a", "host": "h"}]}))
+    loaded = srv.load_servers_file(path)
+    assert loaded.servers[0].updated_at == 0.0 and loaded.deleted == {}

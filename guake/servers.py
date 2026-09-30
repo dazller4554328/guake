@@ -24,10 +24,18 @@ Servers are persisted as JSON in ``~/.config/guake/servers.json``::
                 "options": "-o ServerAliveInterval=30",
                 "command": "tmux attach || tmux",
                 "use_password": false,
-                "color": "#3584e4"
+                "color": "#3584e4",
+                "updated_at": 1759218000.0
             }
-        ]
+        ],
+        "deleted": {
+            "c7f1...": {"at": 1759219000.0, "name": "old-box"}
+        }
     }
+
+``updated_at`` is when the entry last changed and ``deleted`` remembers
+recently removed servers. Both let :mod:`guake.serversync` tell a server
+edited or removed on another device from one that was never there.
 
 Passwords are never written to this file. When ``use_password`` is true the
 password is stored in the desktop keyring (see :mod:`guake.serversecrets`)
@@ -36,18 +44,23 @@ and handed to ``sshpass`` through the environment at connection time.
 
 import json
 import logging
+import math
 import os
 import re
 import shlex
 import shutil
+import time
 import uuid
 
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from dataclasses import replace
 from pathlib import Path
+from typing import Dict
 from typing import Iterable
 from typing import List
+from typing import NamedTuple
 from typing import Optional
 from typing import Tuple
 
@@ -62,6 +75,9 @@ SERVERS_FILENAME = "servers.json"
 DEFAULT_SSH_PORT = 22
 SSH_CONFIG_GROUP = "SSH config"
 SSH_CONFIG_ID_PREFIX = "sshconfig:"
+# Deleted servers are remembered this long so that a sync with a device that
+# still has them offers to delete them instead of bringing them back.
+TOMBSTONE_MAX_AGE = 180 * 24 * 3600
 
 # sshpass exit statuses (see sshpass(1)).
 SSHPASS_HOST_KEY_UNKNOWN = 6
@@ -91,6 +107,10 @@ class Server:
     use_password: bool = False
     # Tab colour, "#rrggbb"; empty picks one automatically.
     color: str = ""
+    # Seconds since the epoch of the last change; 0 for entries saved before
+    # servers could be synced. Set by ServerStore, not by the editor, and
+    # ignored when comparing servers.
+    updated_at: float = dataclass_field(default=0.0, compare=False)
 
     def __post_init__(self):
         if not self.id:
@@ -104,6 +124,8 @@ class Server:
             raise ValueError("A server needs a name")
         if not self.host.strip():
             raise ValueError(f"Server {self.name!r} needs a host")
+        if not _is_timestamp(self.updated_at):
+            raise ValueError(f"Invalid update time for server {self.name!r}")
         self._check_fields()
 
     def _check_fields(self):
@@ -138,11 +160,71 @@ class Server:
         known = {f: data.get(f) for f in cls.__dataclass_fields__ if f in data}
         if "port" in known:
             known["port"] = int(known["port"])
+        if "updated_at" in known:
+            known["updated_at"] = _as_timestamp(known["updated_at"])
         color = known.get("color")
-        if color is not None and not (isinstance(color, str) and COLOR_PATTERN.match(color)):
+        if color not in (None, "") and not (isinstance(color, str) and COLOR_PATTERN.match(color)):
             log.warning("Ignoring invalid colour %r of server %r", color, known.get("name"))
             known.pop("color")
         return cls(**known)
+
+
+def _is_timestamp(value) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    )
+
+
+def _as_timestamp(value) -> float:
+    if not _is_timestamp(value):
+        raise ValueError(f"Invalid timestamp {value!r}")
+    return float(value)
+
+
+class Tombstone(NamedTuple):
+    """A removed server: when, and its name (to recognise it on a device
+    that saved the same server under another id)."""
+
+    at: float
+    name: str
+
+
+def parse_tombstones(raw) -> Dict[str, Tombstone]:
+    """Validate the ``deleted`` mapping of a servers file or a sync peer,
+    dropping malformed entries."""
+    if not isinstance(raw, dict):
+        return {}
+    tombstones = {}
+    for server_id, entry in raw.items():
+        try:
+            name = entry.get("name", "")
+            if not isinstance(server_id, str) or not server_id or len(server_id) > 128:
+                raise ValueError("bad id")
+            if not isinstance(name, str) or CONTROL_CHARS.search(name):
+                raise ValueError("bad name")
+            tombstones[server_id] = Tombstone(at=_as_timestamp(entry.get("at")), name=name)
+        except (AttributeError, ValueError) as e:
+            log.warning("Ignoring invalid deleted server entry %r: %s", server_id, e)
+    return tombstones
+
+
+def dump_tombstones(tombstones: Dict[str, Tombstone]) -> dict:
+    return {sid: {"at": t.at, "name": t.name} for sid, t in sorted(tombstones.items())}
+
+
+def prune_tombstones(
+    tombstones: Dict[str, Tombstone], live_ids: Iterable[str], now: float
+) -> Dict[str, Tombstone]:
+    """Forget tombstones of servers that exist again, and old ones."""
+    live = set(live_ids)
+    return {
+        sid: t
+        for sid, t in tombstones.items()
+        if sid not in live and now - t.at < TOMBSTONE_MAX_AGE
+    }
 
 
 def sort_key(server: Server) -> Tuple[str, str]:
@@ -158,21 +240,38 @@ def group_servers(servers: Iterable[Server]) -> List[Tuple[str, List[Server]]]:
     return sorted(grouped.items(), key=lambda item: (item[0] != "", item[0].lower()))
 
 
-def load_servers(path: Path) -> List[Server]:
-    """Read the servers file. A missing file yields an empty list. A broken
-    file is logged and also yields an empty list, so Guake keeps working."""
+class ServersFile(NamedTuple):
+    servers: List[Server]
+    deleted: Dict[str, Tombstone]
+
+
+def parse_server_entries(raw_servers) -> List[Server]:
+    """Build servers from a list of dicts, skipping (and logging) bad ones."""
+    servers = []
+    for raw in raw_servers if isinstance(raw_servers, list) else []:
+        try:
+            servers.append(Server.from_dict(raw))
+        except (AttributeError, TypeError, ValueError) as e:
+            log.error("Skipping invalid server entry %r: %s", raw, e)
+    return servers
+
+
+def load_servers_file(path: Path) -> ServersFile:
+    """Read the servers file. A missing file yields no servers. A broken
+    file is logged and also yields no servers, so Guake keeps working."""
+    empty = ServersFile(servers=[], deleted={})
     path = Path(path)
     if not path.exists():
-        return []
+        return empty
     try:
         with path.open(encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
         log.error("Cannot read servers file %s: %s", path, e)
-        return []
+        return empty
     if not isinstance(data, dict) or "servers" not in data:
         log.error("Servers file %s has an unexpected layout", path)
-        return []
+        return empty
     if data.get("schema_version", 0) > SERVERS_SCHEMA_VERSION:
         log.error(
             "Servers file %s was written by a newer Guake (schema %s > %s)",
@@ -180,23 +279,27 @@ def load_servers(path: Path) -> List[Server]:
             data.get("schema_version"),
             SERVERS_SCHEMA_VERSION,
         )
-        return []
-    servers = []
-    for raw in data["servers"]:
-        try:
-            servers.append(Server.from_dict(raw))
-        except (TypeError, ValueError) as e:
-            log.error("Skipping invalid server entry %r: %s", raw, e)
-    return servers
+        return empty
+    return ServersFile(
+        servers=parse_server_entries(data["servers"]),
+        deleted=parse_tombstones(data.get("deleted", {})),
+    )
 
 
-def save_servers(path: Path, servers: Iterable[Server]) -> None:
+def load_servers(path: Path) -> List[Server]:
+    return load_servers_file(path).servers
+
+
+def save_servers(
+    path: Path, servers: Iterable[Server], deleted: Optional[Dict[str, Tombstone]] = None
+) -> None:
     """Write the servers file atomically (write to a temp file, then rename)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": SERVERS_SCHEMA_VERSION,
         "servers": [s.to_dict() for s in sorted(servers, key=sort_key)],
+        "deleted": dump_tombstones(deleted or {}),
     }
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8") as f:
@@ -221,14 +324,22 @@ class ServerStore:
 
     def __init__(self, path: Path):
         self.path = Path(path)
-        self._servers: List[Server] = load_servers(self.path)
+        self._servers: List[Server] = []
+        self._deleted: Dict[str, Tombstone] = {}
+        self.reload()
 
     @property
     def servers(self) -> List[Server]:
         return list(self._servers)
 
+    @property
+    def deleted(self) -> Dict[str, Tombstone]:
+        return dict(self._deleted)
+
     def reload(self) -> List[Server]:
-        self._servers = load_servers(self.path)
+        loaded = load_servers_file(self.path)
+        self._servers = loaded.servers
+        self._deleted = loaded.deleted
         return self.servers
 
     def get(self, server_id: str) -> Optional[Server]:
@@ -250,7 +361,11 @@ class ServerStore:
         return self._commit([server if s.id == server.id else s for s in self._servers])
 
     def remove(self, server_id: str) -> List[Server]:
-        return self._commit([s for s in self._servers if s.id != server_id])
+        server = self.get(server_id)
+        deleted = self._deleted
+        if server is not None:
+            deleted = {**deleted, server_id: Tombstone(at=time.time(), name=server.name)}
+        return self._commit([s for s in self._servers if s.id != server_id], deleted)
 
     def import_servers(self, candidates: Iterable[Server]) -> List[Server]:
         """Add every candidate whose name is not already saved. Returns the
@@ -265,7 +380,9 @@ class ServerStore:
         """Add or update servers from a backup. An incoming server replaces
         the saved one with the same id, or else the one with the same name
         (keeping the local id so its keyring password stays attached).
-        Anything else is added."""
+        Anything else is added. Changed entries are stamped as edited now,
+        so an imported backup wins the next server sync, as a manual edit
+        would."""
         current = list(self._servers)
         added, updated, unchanged = [], [], []
         for server in incoming:
@@ -286,9 +403,43 @@ class ServerStore:
             self._commit(current)
         return MergeResult(added=added, updated=updated, unchanged=unchanged)
 
-    def _commit(self, servers: List[Server]) -> List[Server]:
-        save_servers(self.path, servers)
+    def apply_sync(self, upserts: Iterable[Server], removals: Dict[str, Tombstone]) -> List[Server]:
+        """Save servers received from another device and remove the ones
+        deleted there, keeping their timestamps so the devices agree on
+        which copy is newest."""
+        by_id = {s.id: s for s in self._servers}
+        by_id.update({s.id: s for s in upserts})
+        kept = [s for sid, s in by_id.items() if sid not in removals]
+        return self._commit(kept, {**self._deleted, **removals}, stamp=False)
+
+    def _stamped(self, servers: List[Server], now: float) -> List[Server]:
+        """New or changed servers get ``updated_at = now``; unchanged ones
+        keep the saved copy (and so its timestamp)."""
+        saved = {s.id: s for s in self._servers}
+        stamped = []
+        for server in servers:
+            previous = saved.get(server.id)
+            if previous is not None and previous == server:
+                stamped.append(previous)
+            else:
+                stamped.append(server.with_changes(updated_at=now))
+        return stamped
+
+    def _commit(
+        self,
+        servers: List[Server],
+        deleted: Optional[Dict[str, Tombstone]] = None,
+        stamp: bool = True,
+    ) -> List[Server]:
+        now = time.time()
+        if stamp:
+            servers = self._stamped(servers, now)
+        tombstones = prune_tombstones(
+            self._deleted if deleted is None else deleted, (s.id for s in servers), now
+        )
+        save_servers(self.path, servers, tombstones)
         self._servers = sorted(servers, key=sort_key)
+        self._deleted = tombstones
         return self.servers
 
 

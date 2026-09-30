@@ -30,6 +30,7 @@ from guake.servers import Server
 from guake.servers import as_saved_server
 from guake.servers import group_servers
 from guake.servers import parse_ssh_config
+from guake.serversyncdialogs import sync_servers
 from guake.tabcolors import PALETTE
 from guake.tabcolors import auto_color
 from guake.utils import HidePrevention
@@ -408,6 +409,12 @@ class ServersDialog(Gtk.Dialog):
         header = self.get_header_bar()
         self.add_button_ = _icon_button("list-add-symbolic", _("Add a server"), self.on_add)
         header.pack_start(self.add_button_)
+        self.sync_button = _icon_button(
+            "emblem-synchronizing-symbolic",
+            _("Sync servers with your other devices over Tailscale"),
+            self.on_sync,
+        )
+        header.pack_start(self.sync_button)
 
         menu = Gtk.Menu()
         self.import_button = self._menu_item(
@@ -676,6 +683,12 @@ class ServersDialog(Gtk.Dialog):
 
     def on_export_backup(self, *args):
         export_servers(self, self.store.servers)
+
+    def on_sync(self, *args):
+        if sync_servers(self, self.guake):
+            self.refresh()
+            if hasattr(self.guake, "refresh_server_tabs"):
+                self.guake.refresh_server_tabs()
 
     def on_import_backup(self, *args):
         summary = import_servers(self, self.store)

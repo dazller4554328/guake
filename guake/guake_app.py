@@ -23,6 +23,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time as pytime
 import traceback
 import uuid
@@ -83,6 +84,10 @@ from guake.serverdialog import ServersDialog
 from guake.sftp import SftpSession
 from guake.sftp import build_sftp_argv
 from guake.servers import SERVERS_FILENAME
+from guake.servers import load_servers_file
+from guake.serversync import SHARE_SETTING as SERVER_SHARING_SETTING
+from guake.serversync import build_payload
+from guake.serversyncshare import SyncSharing
 from guake.servers import ServerStore
 from guake.servers import SSH_CONFIG_ID_PREFIX
 from guake.servers import LaunchMessages
@@ -101,6 +106,8 @@ enable_find = False
 
 # Setting gobject program name
 GLib.set_prgname(NAME)
+
+SERVER_SHARING_RETRY_SECONDS = 60
 
 GDK_WINDOW_STATE_WITHDRAWN = 1
 GDK_WINDOW_STATE_ICONIFIED = 2
@@ -221,6 +228,16 @@ class Guake(SimpleGladeApp):
 
         # Saved SSH servers (Servers menu / toolbar button)
         self.servers = ServerStore(self.get_xdg_config_directory() / SERVERS_FILENAME)
+
+        # Lets this user's other Tailscale devices sync servers from this one.
+        # Read from disk: requests are answered on a worker thread.
+        self.server_sharing = SyncSharing(
+            lambda: build_payload(load_servers_file(self.servers.path))
+        )
+        self.settings.general.onChangedValue(SERVER_SHARING_SETTING, self.update_server_sharing)
+        self.update_server_sharing()
+        # Tailscale may come up after Guake, or its address or user change.
+        GLib.timeout_add_seconds(SERVER_SHARING_RETRY_SECONDS, self.update_server_sharing)
 
         # Workspace tracking
         self.notebook_manager = NotebookManager(
@@ -1570,6 +1587,18 @@ class Guake(SimpleGladeApp):
             self.get_notebook().set_tab_pos(Gtk.PositionType.BOTTOM)
         # The colour bar sits on the edge facing the terminal.
         self.get_notebook().refresh_tab_colors()
+
+    def update_server_sharing(self, *args):
+        """Start or stop answering server sync requests to follow the setting
+        (and Tailscale address or user changes). That runs ``tailscale``, so
+        it happens on a worker thread. Returns True to keep the timer alive."""
+        wanted = self.settings.general.get_boolean(SERVER_SHARING_SETTING)
+        self.server_sharing.set_wanted(wanted)
+        if wanted or self.server_sharing.running:
+            threading.Thread(
+                target=self.server_sharing.reconcile, name="guake-sharing", daemon=True
+            ).start()
+        return True
 
     def refresh_server_tabs(self):
         """Repaint the tabs after servers were edited (name, colour...)."""
