@@ -33,9 +33,9 @@ PALETTE: List[Tuple[str, str]] = [
 
 ACCENT_WIDTH_PX = 3
 ACTIVE_BAR_ALPHA = 1.0
-ACTIVE_TINT_ALPHA = 0.22
+ACTIVE_TINT_ALPHA = 0.10
 INACTIVE_BAR_ALPHA = 0.55
-INACTIVE_TINT_ALPHA = 0.08
+INACTIVE_TINT_ALPHA = 0.025
 
 
 def is_valid_color(value: str) -> bool:
@@ -65,10 +65,10 @@ def tab_css(color: str, active: bool, tabs_at_bottom: bool) -> str:
     else:
         bar = tint = "transparent"
     return (
-        "box {"
+        ".guake-tab-label {"
         f" border-{edge}: {ACCENT_WIDTH_PX}px solid {bar};"
         f" background-color: {tint};"
-        " border-radius: 4px;"
-        " padding: 2px 6px;"
+        " border-radius: 6px;"
+        " padding: 4px 10px;"
         " }"
     )

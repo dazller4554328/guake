@@ -357,7 +357,7 @@ class ServersDialog(Gtk.Dialog):
         self.guake = guake
         self.store = guake.servers
         self.add_new = add_new
-        self.set_default_size(620, 480)
+        self.set_default_size(660, 520)
         self._build_header_bar()
 
         content = self.get_content_area()
@@ -375,10 +375,13 @@ class ServersDialog(Gtk.Dialog):
         self.view.get_style_context().add_class("guake-servers")
         self.view.set_search_column(COLUMN_NAME)
         column = Gtk.TreeViewColumn()
-        swatch = Gtk.CellRendererPixbuf(xpad=6)
+        swatch = Gtk.CellRendererPixbuf(xpad=12)
         column.pack_start(swatch, False)
         column.set_cell_data_func(swatch, self._render_swatch)
-        text = Gtk.CellRendererText(ypad=6, ellipsize=Pango.EllipsizeMode.END)
+        server_icon = Gtk.CellRendererPixbuf(xpad=6)
+        column.pack_start(server_icon, False)
+        column.set_cell_data_func(server_icon, self._render_server_icon)
+        text = Gtk.CellRendererText(ypad=12, ellipsize=Pango.EllipsizeMode.END)
         column.pack_start(text, True)
         column.set_cell_data_func(text, self._render_text)
         column.set_expand(True)
@@ -495,6 +498,11 @@ class ServersDialog(Gtk.Dialog):
         return box
 
     # -- rendering -------------------------------------------------------------
+
+    def _render_server_icon(self, column, cell, model, tree_iter, data):
+        cell.set_property(
+            "icon-name", "network-server-symbolic" if model[tree_iter][COLUMN_ID] else None
+        )
 
     def _render_swatch(self, column, cell, model, tree_iter, data):
         if model[tree_iter][COLUMN_ID]:

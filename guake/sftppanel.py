@@ -47,7 +47,7 @@ DOWNLOAD = "download"
 UPLOAD = "upload"
 BREADCRUMB_SEGMENTS = 3
 ELLIPSIS = "\u2026"
-HEADER_TINT_ALPHA = 0.12
+HEADER_TINT_ALPHA = 0.05
 
 
 def breadcrumb_segments(path, max_segments=BREADCRUMB_SEGMENTS):
@@ -90,7 +90,7 @@ class Transfer:
 
     @property
     def icon(self):
-        return "document-save-symbolic" if self.direction == DOWNLOAD else "document-send-symbolic"
+        return "go-down-symbolic" if self.direction == DOWNLOAD else "go-up-symbolic"
 
     def run(self, session, progress_cb):
         if self.direction == DOWNLOAD:
@@ -111,7 +111,8 @@ class SftpPanel(Gtk.Box):
     last_upload_dir = None
 
     def __init__(self, window, server_name, session_factory, on_close, color="", subtitle=""):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.get_style_context().add_class("background")
         self.window = window
         self.server_name = server_name
         self.color = color
@@ -123,7 +124,7 @@ class SftpPanel(Gtk.Box):
         self.context_menu = None
         self._closed = False
         self.set_size_request(PANEL_WIDTH, -1)
-        self.set_border_width(6)
+        self.set_border_width(12)
 
         self.prompter = sftpdialogs.MainLoopPrompter(window, server_name)
         self.browser = SftpWorker(session_factory(self.prompter), "sftp-browse")
@@ -144,20 +145,23 @@ class SftpPanel(Gtk.Box):
 
     def _build_header(self):
         header = Gtk.Box(spacing=8)
+        header.set_margin_bottom(2)
+        header.set_margin_top(2)
+        header.get_style_context().add_class("guake-sftp-header")
         if is_valid_color(self.color):
             css = Gtk.CssProvider()
             css.load_from_data(
                 (
-                    "box {"
-                    f" border-left: 4px solid {self.color};"
+                    ".guake-sftp-header {"
+                    f" border-left: 3px solid {self.color};"
                     f" background-color: {rgba(self.color, HEADER_TINT_ALPHA)};"
-                    " border-radius: 6px; padding: 6px 4px 6px 8px; }"
+                    " border-radius: 6px; padding: 10px 6px 10px 12px; }"
                 ).encode()
             )
             header.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         icon = Gtk.Image.new_from_icon_name("folder-remote-symbolic", Gtk.IconSize.LARGE_TOOLBAR)
         header.pack_start(icon, False, False, 0)
-        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
         title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         title.set_markup(f"<b>{GLib.markup_escape_text(self.server_name)}</b>")
         titles.pack_start(title, False, False, 0)
@@ -199,10 +203,10 @@ class SftpPanel(Gtk.Box):
         bar.pack_end(
             self._linked(
                 self._icon_button(
-                    "document-send-symbolic", _("Upload files..."), self.upload_files, flat=False
+                    "go-up-symbolic", _("Upload files..."), self.upload_files, flat=False
                 ),
                 self._icon_button(
-                    "folder-open-symbolic", _("Upload a folder..."), self.upload_folder, flat=False
+                    "folder-symbolic", _("Upload a folder..."), self.upload_folder, flat=False
                 ),
                 self._icon_button(
                     "folder-new-symbolic", _("New folder..."), self.new_folder, flat=False
@@ -218,7 +222,7 @@ class SftpPanel(Gtk.Box):
     def _build_path_bar(self):
         """Clickable breadcrumbs; the pencil (or Ctrl+L) swaps in a text entry."""
         self.crumbs = Gtk.Box()
-        self.crumbs.get_style_context().add_class("linked")
+        self.crumbs.set_spacing(2)
         self.path_entry = Gtk.Entry(placeholder_text=_("Remote path"))
         self.path_entry.connect("activate", self._on_path_entered)
         self.path_entry.connect("key-press-event", self._on_path_key)
@@ -246,8 +250,10 @@ class SftpPanel(Gtk.Box):
         for index, (label, path) in enumerate(segments):
             button = Gtk.Button(label=label, can_focus=False)
             button.set_tooltip_text(path)
+            button.set_relief(Gtk.ReliefStyle.NONE)
             if index == len(segments) - 1:
-                button.get_style_context().add_class("suggested-action")
+                label_widget = button.get_child()
+                label_widget.set_markup(f"<b>{GLib.markup_escape_text(label)}</b>")
             button.connect("clicked", lambda _button, target=path: self.load(target))
             button.show()
             self.crumbs.pack_start(button, False, False, 0)
@@ -289,8 +295,8 @@ class SftpPanel(Gtk.Box):
         self.view.set_tooltip_column(COL_PERMS)
         self.view.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
         name_column = Gtk.TreeViewColumn(_("Name"))
-        icon = Gtk.CellRendererPixbuf()
-        name = Gtk.CellRendererText(ellipsize=Pango.EllipsizeMode.MIDDLE)
+        icon = Gtk.CellRendererPixbuf(xpad=6)
+        name = Gtk.CellRendererText(ypad=7, ellipsize=Pango.EllipsizeMode.MIDDLE)
         name_column.pack_start(icon, False)
         name_column.pack_start(name, True)
         name_column.add_attribute(icon, "icon-name", COL_ICON)
@@ -328,8 +334,8 @@ class SftpPanel(Gtk.Box):
         self.transfer_view = Gtk.TreeView(model=self.transfer_model, headers_visible=False)
         self.transfer_view.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
         column = Gtk.TreeViewColumn(_("Transfers"))
-        icon = Gtk.CellRendererPixbuf()
-        name = Gtk.CellRendererText(ellipsize=Pango.EllipsizeMode.MIDDLE)
+        icon = Gtk.CellRendererPixbuf(xpad=6)
+        name = Gtk.CellRendererText(ypad=7, ellipsize=Pango.EllipsizeMode.MIDDLE)
         column.pack_start(icon, False)
         column.pack_start(name, True)
         column.add_attribute(icon, "icon-name", TCOL_ICON)
@@ -353,6 +359,8 @@ class SftpPanel(Gtk.Box):
             justify=Gtk.Justification.CENTER,
         )
         hint.get_style_context().add_class("dim-label")
+        hint.set_margin_top(12)
+        hint.set_margin_bottom(12)
         scrolled.show_all()
         hint.show()
         self.transfer_stack = Gtk.Stack()
@@ -362,7 +370,8 @@ class SftpPanel(Gtk.Box):
         self.transfer_model.connect("row-inserted", self._on_transfers_changed)
         self.transfer_model.connect("row-deleted", self._on_transfers_changed)
 
-        bar = Gtk.Box(spacing=2)
+        self.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 2)
+        bar = Gtk.Box(spacing=6)
         label = Gtk.Label(xalign=0)
         label.set_markup(f"<b>{GLib.markup_escape_text(_('Transfers'))}</b>")
         bar.pack_start(label, True, True, 0)

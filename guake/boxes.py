@@ -745,11 +745,12 @@ class TabLabelEventBox(Gtk.EventBox):
         self.user_color = ""
         self.server = None
         self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, visible=True)
+        self.box.get_style_context().add_class("guake-tab-label")
         self.icon = Gtk.Image.new_from_icon_name("network-server-symbolic", Gtk.IconSize.MENU)
         self.icon.set_no_show_all(True)
         self.label = Gtk.Label(label=text, visible=True)
         self.close_button = Gtk.Button(
-            image=Gtk.Image.new_from_icon_name("window-close", Gtk.IconSize.MENU),
+            image=Gtk.Image.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU),
             relief=Gtk.ReliefStyle.NONE,
         )
         self.close_button.connect("clicked", self.on_close)
