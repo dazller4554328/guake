@@ -7,6 +7,7 @@ import stat
 import pytest
 
 from guake import serverbackup as bk
+from guake.servers import GroupColor
 from guake.servers import Server
 from guake.servers import save_servers
 
@@ -42,6 +43,13 @@ def test_backup_without_secrets_round_trips(tmp_path, servers):
     backup = bk.load_backup(path)
     assert backup.servers == servers
     assert not backup.has_secrets
+
+
+def test_backup_carries_group_colors(tmp_path, servers):
+    path = tmp_path / "backup.json"
+    groups = {"Prod": GroupColor("#e62d42", 12.0)}
+    bk.write_backup(path, bk.build_backup(servers, groups=groups))
+    assert bk.load_backup(path).groups == groups
 
 
 def test_backup_file_is_private(tmp_path, servers):

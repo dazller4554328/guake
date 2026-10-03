@@ -41,9 +41,13 @@ What this fork adds
   the server manager to pull the servers of your other devices on the same Tailscale
   account. You review every change before it is applied, and deletions always ask for
   confirmation. Passwords and keys stay on each machine.
-- **Coloured tabs** – each server tab gets its own colour (pick one per server, or per
-  tab from the tab's right-click *Tab Color* menu) and a server icon, so you can tell
-  production from the lab at a glance.
+- **Tabs coloured by group** – every server of a group shares the group's colour, shown
+  as a tint over the whole tab, so you always know which set of machines you are typing
+  into. Pick the colour of a group in the servers window; a single server or tab can
+  still have its own.
+- **Visual Studio style look** – the servers window and the SFTP panel use a flat Visual
+  Studio like theme (light or dark, following your GTK theme) with the
+  `Codicons <https://github.com/microsoft/vscode-codicons>`_ icon set (CC BY 4.0).
 - **First connection to a new server just works** – with a saved password, ssh's
   "authenticity of host ... can't be established" question used to end the
   connection. The tab now shows the fingerprint and asks you to type ``yes``, then logs

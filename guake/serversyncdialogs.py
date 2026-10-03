@@ -20,6 +20,7 @@ from gi.repository import GLib
 from gi.repository import Gio
 from gi.repository import Gtk
 
+from guake import addonstyle
 from guake import serversecrets
 from guake import serversync
 from guake.serversync import ADD
@@ -154,9 +155,11 @@ class SyncDialog(Gtk.Dialog):
 
     def __init__(self, parent, guake, collect=serversync.collect):
         super().__init__(title=_("Sync servers"), transient_for=parent, modal=True)
+        addonstyle.mark(self)
         self.guake = guake
         self.store = guake.servers
         self.changes = []
+        self.group_colors = {}
         self._collect = collect
         self._closed = False
         self.set_default_size(560, 460)
@@ -242,6 +245,11 @@ class SyncDialog(Gtk.Dialog):
         self.changes_box = scrolled
         box.pack_start(scrolled, True, True, 0)
 
+        # Ticked like a recommended change; shown when there is something to take.
+        self.group_colors_check = Gtk.CheckButton(active=True, no_show_all=True)
+        self.group_colors_check.connect("toggled", lambda *args: self._update_apply())
+        box.pack_start(self.group_colors_check, False, False, 0)
+
         self.hint_label = Gtk.Label(xalign=0.0, wrap=True, max_width_chars=70)
         self.hint_label.get_style_context().add_class("dim-label")
         box.pack_start(self.hint_label, False, False, 0)
@@ -282,6 +290,13 @@ class SyncDialog(Gtk.Dialog):
             r.device.name: r.snapshot.shared for r in collected.results if r.snapshot is not None
         }
         self.changes = serversync.plan_sync(self.store.servers, self.store.deleted, peers)
+        self.group_colors = serversync.plan_group_colors(self.store.group_colors, peers)
+        self.group_colors_check.set_label(
+            _("Use the group colors picked on the other devices: {groups}").format(
+                groups=", ".join(sorted(self.group_colors))
+            )
+        )
+        self.group_colors_check.set_visible(bool(self.group_colors))
         self.devices_label.set_markup("\n".join(device_summary(r) for r in collected.results))
         self._fill_changes(reachable=bool(peers))
         self.stack.set_visible_child_name("results")
@@ -305,6 +320,8 @@ class SyncDialog(Gtk.Dialog):
                     "Sync servers window of the other computers, with Guake running."
                 )
             )
+        elif not self.changes and self.group_colors:
+            self.hint_label.set_text(_("The servers are already in sync."))
         elif not self.changes:
             self.hint_label.set_text(_("Everything is already in sync."))
         else:
@@ -323,7 +340,12 @@ class SyncDialog(Gtk.Dialog):
         self._update_apply()
 
     def _update_apply(self):
-        self.apply_button.set_sensitive(bool(self.selected_changes()))
+        self.apply_button.set_sensitive(
+            bool(self.selected_changes() or self.selected_group_colors())
+        )
+
+    def selected_group_colors(self):
+        return self.group_colors if self.group_colors_check.get_active() else {}
 
     def selected_changes(self):
         return [self.changes[row[COL_INDEX]] for row in self.model if row[COL_APPLY]]
@@ -351,6 +373,7 @@ class SyncDialog(Gtk.Dialog):
             buttons=Gtk.ButtonsType.NONE,
             text=title,
         )
+        addonstyle.mark(dialog)
         lines = [
             _("• Delete {name} (deleted on {device})").format(name=c.server.name, device=c.device)
             for c in deletions
@@ -382,6 +405,7 @@ class SyncDialog(Gtk.Dialog):
         if to_confirm and not self.confirm(to_confirm):
             return False
         serversync.apply_changes(self.store, selected)
+        self.store.apply_group_colors(self.selected_group_colors())
         for change in selected:
             if change.kind == DELETE and change.server.use_password:
                 serversecrets.clear_password(change.server.id)

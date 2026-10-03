@@ -9,6 +9,7 @@ from gi.repository import Gtk
 
 from guake import serversync as sync
 from guake import serversyncdialogs as dialogs
+from guake.servers import GroupColor
 from guake.servers import Server
 from guake.servers import ServerStore
 from guake.servers import ServersFile
@@ -29,8 +30,9 @@ def collected(*results):
     return sync.Collected(me=me, results=list(results))
 
 
-def reachable(name, servers=(), deleted=None):
-    snapshot = sync.Snapshot(ServersFile(servers=list(servers), deleted=deleted or {}), 0)
+def reachable(name, servers=(), deleted=None, groups=None):
+    shared = ServersFile(servers=list(servers), deleted=deleted or {}, groups=groups or {})
+    snapshot = sync.Snapshot(shared, 0)
     return sync.PeerResult(sync.Device(name, "100.1.1.2", True), snapshot, "")
 
 
@@ -98,6 +100,31 @@ def test_unreachable_device_is_listed(guake):
 def test_nothing_to_do(guake):
     dialog = open_dialog(guake, collected(reachable("laptop", guake.servers.servers)))
     assert "already in sync" in dialog.hint_label.get_text()
+
+
+def test_group_colors_picked_elsewhere_can_be_applied_on_their_own(guake):
+    guake.servers.update(guake.servers.get("web").with_changes(group="Prod"))
+    picked = {"Prod": GroupColor("#e62d42", NOW)}
+    dialog = open_dialog(
+        guake, collected(reachable("laptop", guake.servers.servers, groups=picked))
+    )
+    assert not dialog.changes
+    assert "Prod" in dialog.group_colors_check.get_label()
+    assert dialog.group_colors_check.get_visible() and dialog.apply_button.get_sensitive()
+
+    # Unticked, nothing is left to apply and the colour stays as it was.
+    dialog.group_colors_check.set_active(False)
+    assert not dialog.apply_button.get_sensitive()
+    assert dialog.apply() and not guake.servers.has_group_color("Prod")
+
+    dialog.group_colors_check.set_active(True)
+    assert dialog.apply()
+    assert guake.servers.group_color("Prod") == "#e62d42"
+
+
+def test_group_colors_row_is_hidden_when_there_are_none(guake):
+    dialog = open_dialog(guake, collected(reachable("laptop", guake.servers.servers)))
+    assert not dialog.group_colors_check.get_visible()
 
 
 def test_adds_are_ticked_and_deletions_are_not(guake):

@@ -10,7 +10,6 @@ from guake.customcommands import CustomCommands
 from guake.servers import group_servers
 from guake.servers import parse_ssh_config
 from guake.tabcolors import PALETTE
-from guake.tabcolors import auto_color
 
 import logging
 
@@ -264,16 +263,16 @@ def mk_servers_menu(guake, action=None):
         target = menu
         if group:
             target = Gtk.Menu()
-            mi = Gtk.MenuItem(group)
+            mi = _mk_swatch_item(guake.servers.group_color(group), group)
             mi.set_submenu(target)
             menu.add(mi)
         for server in members:
-            target.add(_mk_server_item(server, action))
+            target.add(_mk_server_item(server, action, guake.servers.color_for(server)))
     ssh_config_hosts = parse_ssh_config()
     if ssh_config_hosts:
         submenu = Gtk.Menu()
         for server in ssh_config_hosts:
-            submenu.add(_mk_server_item(server, action))
+            submenu.add(_mk_server_item(server, action, guake.servers.color_for(server)))
         menu.add(Gtk.SeparatorMenuItem())
         mi = Gtk.MenuItem(_("Hosts from ~/.ssh/config"))
         mi.set_submenu(submenu)
@@ -289,18 +288,26 @@ def mk_servers_menu(guake, action=None):
     return menu
 
 
-def _mk_server_item(server, action):
-    """Menu entry for a server: its tab colour, its name and, dimmed, where
-    it connects to."""
-    detail = server.target if server.port == 22 else f"{server.target}:{server.port}"
+def _mk_swatch_item(color, text):
+    """A menu item led by a colour swatch. Returns the item; its box is
+    the item's child."""
     mi = Gtk.MenuItem()
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-    box.pack_start(color_swatch(server.color or auto_color(server.id), size=10), False, False, 0)
-    box.pack_start(Gtk.Label(label=server.name, xalign=0.0), True, True, 0)
+    box.pack_start(color_swatch(color, size=10), False, False, 0)
+    box.pack_start(Gtk.Label(label=text, xalign=0.0), True, True, 0)
+    mi.add(box)
+    return mi
+
+
+def _mk_server_item(server, action, color):
+    """Menu entry for a server: the colour of its tabs, its name and,
+    dimmed, where it connects to."""
+    detail = server.target if server.port == 22 else f"{server.target}:{server.port}"
+    mi = _mk_swatch_item(color, server.name)
+    box = mi.get_child()
     detail_label = Gtk.Label(label=detail, xalign=1.0, margin_start=16)
     detail_label.get_style_context().add_class("dim-label")
     box.pack_end(detail_label, False, False, 0)
-    mi.add(box)
     mi.set_tooltip_text(detail)
     mi.connect("activate", lambda *args: action(server))
     return mi

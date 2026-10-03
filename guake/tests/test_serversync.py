@@ -7,6 +7,7 @@ import pytest
 
 from guake import serversync as sync
 from guake.servers import SSH_CONFIG_ID_PREFIX
+from guake.servers import GroupColor
 from guake.servers import Server
 from guake.servers import ServerStore
 from guake.servers import ServersFile
@@ -201,6 +202,46 @@ def test_payload_round_trip_skips_ssh_config_entries():
     assert [s.name for s in parsed.shared.servers] == ["web"]
     assert parsed.shared.servers[0].updated_at == 5
     assert parsed.shared.deleted == shared.deleted and parsed.refused == 0
+
+
+def test_payload_carries_group_colors_and_clamps_their_time():
+    shared = ServersFile(
+        servers=[server("web", 5)],
+        deleted={},
+        groups={"Prod": GroupColor("#e62d42", 1e300), "Lab": GroupColor("", 4.0)},
+    )
+    parsed = sync.parse_payload(json.loads(json.dumps(sync.build_payload(shared))), now=100.0)
+    assert parsed.shared.groups == {
+        "Prod": GroupColor("#e62d42", 100.0),
+        "Lab": GroupColor("", 4.0),
+    }
+
+
+def test_payload_from_an_older_guake_has_no_group_colors():
+    data = {"schema_version": 1, "servers": []}
+    assert sync.parse_payload(data).shared.groups == {}
+
+
+def test_plan_group_colors_takes_only_newer_picks():
+    local = {"Prod": GroupColor("#e62d42", 50.0), "Lab": GroupColor("#3a944a", 50.0)}
+    peers = {
+        "laptop": ServersFile(
+            [server("web", 1, group="Prod")], {}, {"Prod": GroupColor("#3584e4", 60.0)}
+        ),
+        "desk": ServersFile(
+            [server("nas", 1, group="Lab"), server("new", 1, group="New")],
+            {},
+            {
+                "Lab": GroupColor("#9141ac", 10.0),
+                "New": GroupColor("#c88800", 1.0),
+                "Unused": GroupColor("#c88800", 99.0),
+            },
+        ),
+    }
+    assert sync.plan_group_colors(local, peers) == {
+        "Prod": GroupColor("#3584e4", 60.0),
+        "New": GroupColor("#c88800", 1.0),
+    }
 
 
 def test_payload_drops_invalid_servers():

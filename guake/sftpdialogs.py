@@ -16,6 +16,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib
 from gi.repository import Gtk
 
+from guake import addonstyle
 from guake.utils import HidePrevention
 
 ENTRY_WIDTH_CHARS = 40
@@ -24,6 +25,7 @@ MAX_LISTED_NAMES = 8
 
 def _run(window, dialog):
     """Run a modal dialog on top of Guake and return its response."""
+    addonstyle.mark(dialog)
     HidePrevention(window).prevent()
     try:
         return dialog.run()
@@ -74,7 +76,7 @@ def list_names(names):
 
 def ask_text(window, title, label, default="", ok_label=None):
     """Prompt for one line of text; returns it, or None when cancelled."""
-    dialog = Gtk.Dialog(title=title, transient_for=window, modal=True)
+    dialog = addonstyle.mark(Gtk.Dialog(title=title, transient_for=window, modal=True))
     dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
     dialog.add_button(ok_label or _("OK"), Gtk.ResponseType.OK)
     dialog.set_default_response(Gtk.ResponseType.OK)
@@ -99,8 +101,10 @@ def ask_text(window, title, label, default="", ok_label=None):
 def ask_question(window, server_name, text, secret):
     """Show a question from ssh (password, passphrase, host key...) and
     return the answer, or None when the user cancelled."""
-    dialog = Gtk.Dialog(
-        title=_("SFTP: {name}").format(name=server_name), transient_for=window, modal=True
+    dialog = addonstyle.mark(
+        Gtk.Dialog(
+            title=_("SFTP: {name}").format(name=server_name), transient_for=window, modal=True
+        )
     )
     dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
     dialog.add_button(_("OK"), Gtk.ResponseType.OK)

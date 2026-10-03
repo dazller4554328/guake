@@ -1,7 +1,8 @@
 # -*- coding: utf-8; -*-
 """
 GTK dialogs for the saved servers feature: the servers manager (a list with
-connect / add / edit / remove / import actions) and the server editor form.
+connect / add / edit / remove / import actions, where a group's colour is
+picked) and the server editor form.
 
 Storage and the ssh command line live in :mod:`guake.servers`; passwords
 are kept in the desktop keyring through :mod:`guake.serversecrets`.
@@ -21,8 +22,10 @@ from gi.repository import Gdk
 from gi.repository import Gtk
 from gi.repository import Pango
 
+from guake import addonstyle
 from guake import serversecrets
 from guake.menus import color_swatch
+from guake.menus import mk_color_menu
 from guake.serverbackupdialogs import export_servers
 from guake.serverbackupdialogs import import_servers
 from guake.servers import DEFAULT_SSH_PORT
@@ -32,16 +35,19 @@ from guake.servers import group_servers
 from guake.servers import parse_ssh_config
 from guake.serversyncdialogs import sync_servers
 from guake.tabcolors import PALETTE
-from guake.tabcolors import auto_color
 from guake.utils import HidePrevention
 
 log = logging.getLogger(__name__)
 
 COLUMN_ID, COLUMN_NAME, COLUMN_DETAIL, COLUMN_WEIGHT, COLUMN_COLOR, COLUMN_SUBTITLE = range(6)
 ENTRY_WIDTH_CHARS = 40
-SWATCH_SIZE = 12
+ICON_SIZE = 16
+CHIP_SIZE = 10
+CHIP_RADIUS = 2
 COLOR_SWATCH_SIZE = 18
-_SWATCH_CACHE = {}
+ROW_PADDING = 5
+DIM_ALPHA = "62%"
+_ICON_CACHE = {}
 
 
 def _show_message(parent, message_type, text, secondary=None, buttons=Gtk.ButtonsType.OK):
@@ -53,6 +59,7 @@ def _show_message(parent, message_type, text, secondary=None, buttons=Gtk.Button
         buttons=buttons,
         text=text,
     )
+    addonstyle.mark(dialog)
     if secondary:
         dialog.format_secondary_text(secondary)
     response = dialog.run()
@@ -83,12 +90,15 @@ class ServerEditDialog(Gtk.Dialog):
                 Gtk.ResponseType.OK,
             ),
         )
+        addonstyle.mark(self)
         self.store = store
         self.server = server
         self.set_default_response(Gtk.ResponseType.OK)
         self.set_resizable(False)
+        ok_button = self.get_widget_for_response(Gtk.ResponseType.OK)
+        ok_button.get_style_context().add_class("suggested-action")
 
-        self._grid = Gtk.Grid(row_spacing=6, column_spacing=12, border_width=12)
+        self._grid = Gtk.Grid(row_spacing=8, column_spacing=12, border_width=16)
         self._row = 0
         self.get_content_area().pack_start(self._grid, True, True, 0)
 
@@ -163,7 +173,8 @@ class ServerEditDialog(Gtk.Dialog):
     # -- layout helpers ------------------------------------------------------
 
     def _add_row(self, label_text, widget, expand=True):
-        label = Gtk.Label(label=label_text, xalign=1.0)
+        label = Gtk.Label(label=label_text, xalign=0.0)
+        label.get_style_context().add_class("dim-label")
         self._grid.attach(label, 0, self._row, 1, 1)
         widget.set_hexpand(expand)
         self._grid.attach(widget, 1, self._row, 1, 1)
@@ -171,17 +182,19 @@ class ServerEditDialog(Gtk.Dialog):
         return widget
 
     def _build_color_picker(self, current):
-        """A row of round colour buttons; "Auto" picks a colour from the name."""
+        """A row of colour buttons; "Auto" follows the server's group."""
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         self.color_buttons = {}
         group = None
-        choices = [("", _("Automatic"))] + [(c, _(n)) for n, c in PALETTE]
+        automatic = _("Automatic: the color of the server's group")
+        choices = [("", automatic)] + [(c, _(n)) for n, c in PALETTE]
         if current and current not in {c for _n, c in PALETTE}:
             # A colour set outside the palette (servers.json, a backup) stays pickable.
             choices.append((current, _("Custom {color}").format(color=current)))
         for color, name in choices:
             button = Gtk.RadioButton(group=group, draw_indicator=False, relief=Gtk.ReliefStyle.NONE)
             group = group or button
+            button.get_style_context().add_class("guake-swatch")
             if color:
                 button.add(color_swatch(color, size=COLOR_SWATCH_SIZE))
             else:
@@ -201,8 +214,8 @@ class ServerEditDialog(Gtk.Dialog):
         return self._add_row(label_text, entry)
 
     def _add_section(self, title):
-        label = Gtk.Label(xalign=0.0, margin_top=8)
-        label.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
+        label = Gtk.Label(label=title.upper(), xalign=0.0)
+        label.get_style_context().add_class("guake-section-title")
         self._grid.attach(label, 0, self._row, 2, 1)
         self._row += 1
 
@@ -308,26 +321,62 @@ class ServerEditDialog(Gtk.Dialog):
         return had_password
 
 
-def _swatch_pixbuf(color, size=SWATCH_SIZE):
-    """A round colour dot for tree views (cached per colour)."""
-    if color not in _SWATCH_CACHE:
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
-        cr = cairo.Context(surface)
-        rgba = Gdk.RGBA()
-        rgba.parse(color)
-        cr.set_source_rgba(rgba.red, rgba.green, rgba.blue, 1)
-        cr.arc(size / 2, size / 2, size / 2 - 1, 0, 2 * math.pi)
-        cr.fill()
-        _SWATCH_CACHE[color] = Gdk.pixbuf_get_from_surface(surface, 0, 0, size, size)
-    return _SWATCH_CACHE[color]
+def _chip_surface(color, scale):
+    """A small rounded square in ``color``: the mark of a group."""
+    size = ICON_SIZE * scale
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+    surface.set_device_scale(scale, scale)
+    cr = cairo.Context(surface)
+    rgba = Gdk.RGBA()
+    rgba.parse(color)
+    cr.set_source_rgba(rgba.red, rgba.green, rgba.blue, 1)
+    left = top = (ICON_SIZE - CHIP_SIZE) / 2
+    right = bottom = left + CHIP_SIZE
+    cr.new_sub_path()
+    cr.arc(right - CHIP_RADIUS, top + CHIP_RADIUS, CHIP_RADIUS, -math.pi / 2, 0)
+    cr.arc(right - CHIP_RADIUS, bottom - CHIP_RADIUS, CHIP_RADIUS, 0, math.pi / 2)
+    cr.arc(left + CHIP_RADIUS, bottom - CHIP_RADIUS, CHIP_RADIUS, math.pi / 2, math.pi)
+    cr.arc(left + CHIP_RADIUS, top + CHIP_RADIUS, CHIP_RADIUS, math.pi, 3 * math.pi / 2)
+    cr.close_path()
+    cr.fill()
+    return surface
 
 
-def _icon_button(icon_name, tooltip, callback, label=None):
+def row_icon(color, is_group, scale=1):
+    """Icon of a list row, in the row's colour: a chip for a group, a
+    server for a server (cached)."""
+    key = (color, is_group, scale)
+    if key not in _ICON_CACHE:
+        surface = (
+            _chip_surface(color, scale)
+            if is_group
+            else addonstyle.colored_icon("server", color, ICON_SIZE, scale)
+        )
+        if surface is None:
+            return None
+        _ICON_CACHE[key] = surface
+    return _ICON_CACHE[key]
+
+
+def _icon_button(icon, tooltip, callback, label=None):
     button = Gtk.Button(label=label, always_show_image=bool(label))
-    button.set_image(Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON))
+    button.set_image(addonstyle.image(icon, Gtk.IconSize.BUTTON))
     button.set_tooltip_text(tooltip)
     button.connect("clicked", callback)
     return button
+
+
+def count_summary(servers):
+    """``"5 servers in 2 groups"`` for the title bar."""
+    groups = {s.group for s in servers if s.group}
+    if not servers:
+        return ""
+    text = _("1 server") if len(servers) == 1 else _("{count} servers").format(count=len(servers))
+    if groups:
+        text += " \u00b7 " + (
+            _("1 group") if len(groups) == 1 else _("{count} groups").format(count=len(groups))
+        )
+    return text
 
 
 def server_subtitle(server):
@@ -343,9 +392,10 @@ def server_subtitle(server):
 
 
 class ServersDialog(Gtk.Dialog):
-    """The servers manager: lists saved servers grouped by group name, with
-    a search field. Double-click (or Connect) opens a tab connected to the
-    server. The header bar menu imports and exports backups."""
+    """The servers manager: lists saved servers under their group, with a
+    search field. Double-click (or Connect) opens a tab connected to the
+    server. A group's colour, shared by the tabs of all its servers, is
+    picked here. The header bar menu imports and exports backups."""
 
     def __init__(self, guake, add_new=False):
         super().__init__(
@@ -354,19 +404,27 @@ class ServersDialog(Gtk.Dialog):
             destroy_with_parent=True,
             use_header_bar=True,
         )
+        addonstyle.mark(self)
         self.guake = guake
         self.store = guake.servers
         self.add_new = add_new
-        self.set_default_size(660, 520)
+        self.color_menu = None
+        self.context_menu = None
+        self.set_default_size(680, 540)
         self._build_header_bar()
 
         content = self.get_content_area()
         content.set_spacing(0)
+        content.set_border_width(0)
         self.search_entry = Gtk.SearchEntry(
-            placeholder_text=_("Search by name, host, user or group"), margin=12, margin_bottom=6
+            placeholder_text=_("Search by name, host, user or group")
         )
         self.search_entry.connect("search-changed", self.on_search_changed)
-        content.pack_start(self.search_entry, False, False, 0)
+        search_box = Gtk.Box()
+        search_box.get_style_context().add_class("guake-search")
+        search_box.pack_start(self.search_entry, True, True, 0)
+        content.pack_start(search_box, False, False, 0)
+        content.pack_start(Gtk.Separator(), False, False, 0)
 
         self.model = Gtk.TreeStore(str, str, str, int, str, str)
         self.filter = self.model.filter_new()
@@ -374,21 +432,20 @@ class ServersDialog(Gtk.Dialog):
         self.view = Gtk.TreeView(model=self.filter, headers_visible=False, enable_search=False)
         self.view.get_style_context().add_class("guake-servers")
         self.view.set_search_column(COLUMN_NAME)
+        self.view.set_level_indentation(4)
         column = Gtk.TreeViewColumn()
-        swatch = Gtk.CellRendererPixbuf(xpad=12)
-        column.pack_start(swatch, False)
-        column.set_cell_data_func(swatch, self._render_swatch)
-        server_icon = Gtk.CellRendererPixbuf(xpad=6)
-        column.pack_start(server_icon, False)
-        column.set_cell_data_func(server_icon, self._render_server_icon)
-        text = Gtk.CellRendererText(ypad=12, ellipsize=Pango.EllipsizeMode.END)
+        icon = Gtk.CellRendererPixbuf(xpad=4)
+        column.pack_start(icon, False)
+        column.set_cell_data_func(icon, self._render_icon)
+        text = Gtk.CellRendererText(ypad=ROW_PADDING, ellipsize=Pango.EllipsizeMode.END)
         column.pack_start(text, True)
         column.set_cell_data_func(text, self._render_text)
         column.set_expand(True)
         self.view.append_column(column)
         self.view.connect("row-activated", self.on_row_activated)
+        self.view.connect("button-press-event", self.on_button_press)
         self.view.get_selection().connect("changed", self.on_selection_changed)
-        scrolled = Gtk.ScrolledWindow(shadow_type=Gtk.ShadowType.IN, margin_start=12, margin_end=12)
+        scrolled = Gtk.ScrolledWindow(shadow_type=Gtk.ShadowType.NONE)
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scrolled.add(self.view)
 
@@ -410,12 +467,10 @@ class ServersDialog(Gtk.Dialog):
 
     def _build_header_bar(self):
         header = self.get_header_bar()
-        self.add_button_ = _icon_button("list-add-symbolic", _("Add a server"), self.on_add)
+        self.add_button_ = _icon_button("add", _("Add a server"), self.on_add)
         header.pack_start(self.add_button_)
         self.sync_button = _icon_button(
-            "emblem-synchronizing-symbolic",
-            _("Sync servers with your other devices over Tailscale"),
-            self.on_sync,
+            "sync", _("Sync servers with your other devices over Tailscale"), self.on_sync
         )
         header.pack_start(self.sync_button)
 
@@ -435,9 +490,7 @@ class ServersDialog(Gtk.Dialog):
         )
         menu.show_all()
         self.more_button = Gtk.MenuButton(popup=menu, tooltip_text=_("Import and export"))
-        self.more_button.set_image(
-            Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON)
-        )
+        self.more_button.set_image(addonstyle.image("ellipsis", Gtk.IconSize.BUTTON))
         header.pack_end(self.more_button)
 
     @staticmethod
@@ -449,24 +502,26 @@ class ServersDialog(Gtk.Dialog):
 
     def _build_action_bar(self):
         bar = Gtk.ActionBar()
-        self.edit_button = _icon_button(
-            "document-edit-symbolic", _("Edit the server"), self.on_edit, _("Edit")
-        )
+        self.edit_button = _icon_button("edit", _("Edit the server"), self.on_edit, _("Edit"))
         self.remove_button = _icon_button(
-            "user-trash-symbolic", _("Remove the server"), self.on_remove, _("Remove")
+            "trash", _("Remove the server"), self.on_remove, _("Remove")
+        )
+        self.group_color_button = _icon_button(
+            "symbol-color",
+            _("Pick the color shared by the tabs of every server in the group"),
+            self.on_group_color,
+            _("Group color"),
         )
         self.sftp_button = _icon_button(
-            "folder-remote-symbolic", _("Browse files over SFTP"), self.on_sftp, _("Files")
+            "remote-explorer", _("Browse files over SFTP"), self.on_sftp, _("Files")
         )
         self.connect_button = _icon_button(
-            "utilities-terminal-symbolic",
-            _("Open a tab logged into the server"),
-            self.on_connect,
-            _("Connect"),
+            "terminal", _("Open a tab logged into the server"), self.on_connect, _("Connect")
         )
         self.connect_button.get_style_context().add_class("suggested-action")
         bar.pack_start(self.edit_button)
         bar.pack_start(self.remove_button)
+        bar.pack_start(self.group_color_button)
         bar.pack_end(self.connect_button)
         bar.pack_end(self.sftp_button)
         return bar
@@ -475,11 +530,12 @@ class ServersDialog(Gtk.Dialog):
         box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=12, valign=Gtk.Align.CENTER, margin=24
         )
-        icon = Gtk.Image.new_from_icon_name("network-server-symbolic", Gtk.IconSize.DIALOG)
-        icon.set_pixel_size(64)
+        icon = addonstyle.image("server-environment", Gtk.IconSize.DIALOG)
+        icon.set_pixel_size(56)
         icon.get_style_context().add_class("dim-label")
         title = Gtk.Label()
-        title.set_markup(f"<big><b>{GLib.markup_escape_text(_('No saved servers yet'))}</b></big>")
+        title.get_style_context().add_class("guake-heading")
+        title.set_markup(f"<big>{GLib.markup_escape_text(_('No saved servers yet'))}</big>")
         hint = Gtk.Label(
             label=_(
                 "Add a server, or bring your servers over from another machine with "
@@ -499,28 +555,21 @@ class ServersDialog(Gtk.Dialog):
 
     # -- rendering -------------------------------------------------------------
 
-    def _render_server_icon(self, column, cell, model, tree_iter, data):
+    def _render_icon(self, column, cell, model, tree_iter, data):
+        row = model[tree_iter]
         cell.set_property(
-            "icon-name", "network-server-symbolic" if model[tree_iter][COLUMN_ID] else None
+            "surface", row_icon(row[COLUMN_COLOR], not row[COLUMN_ID], self.get_scale_factor())
         )
-
-    def _render_swatch(self, column, cell, model, tree_iter, data):
-        if model[tree_iter][COLUMN_ID]:
-            cell.set_property("icon-name", None)
-            cell.set_property("pixbuf", _swatch_pixbuf(model[tree_iter][COLUMN_COLOR]))
-        else:
-            cell.set_property("pixbuf", None)
-            cell.set_property("icon-name", "folder-symbolic")
 
     def _render_text(self, column, cell, model, tree_iter, data):
         row = model[tree_iter]
         name = GLib.markup_escape_text(row[COLUMN_NAME])
         if row[COLUMN_ID]:
-            subtitle = GLib.markup_escape_text(row[COLUMN_SUBTITLE])
-            markup = f'<b>{name}</b>\n<small><span alpha="65%">{subtitle}</span></small>'
+            dimmed = GLib.markup_escape_text(row[COLUMN_SUBTITLE])
+            markup = f'{name}   <span alpha="{DIM_ALPHA}" size="small">{dimmed}</span>'
         else:
             count = model.iter_n_children(tree_iter)
-            markup = f'<b>{name}</b>  <small><span alpha="65%">{count}</span></small>'
+            markup = f'<b>{name}</b>   <span alpha="{DIM_ALPHA}" size="small">{count}</span>'
         cell.set_property("markup", markup)
 
     def _row_visible(self, model, tree_iter, data):
@@ -566,14 +615,18 @@ class ServersDialog(Gtk.Dialog):
 
     # -- list handling -------------------------------------------------------
 
-    def refresh(self, select_id=None):
+    def refresh(self, select_id=None, select_group=None):
         self.model.clear()
         select_iter = None
         servers = self.store.servers
         for group, members in group_servers(servers):
             parent = None
             if group:
-                parent = self.model.append(None, ["", group, "", Pango.Weight.BOLD, "", ""])
+                parent = self.model.append(
+                    None, ["", group, "", Pango.Weight.BOLD, self.store.group_color(group), ""]
+                )
+                if group == select_group and select_id is None:
+                    select_iter = parent
             for server in members:
                 row = self.model.append(
                     parent,
@@ -582,7 +635,7 @@ class ServersDialog(Gtk.Dialog):
                         server.name,
                         server_detail(server),
                         Pango.Weight.NORMAL,
-                        server.color or auto_color(server.id),
+                        self.store.color_for(server),
                         server_subtitle(server),
                     ],
                 )
@@ -595,6 +648,7 @@ class ServersDialog(Gtk.Dialog):
             if path is not None:
                 self.view.set_cursor(path, None, False)
         self.stack.set_visible_child_name("list" if servers else "empty")
+        self.get_header_bar().set_subtitle(count_summary(servers))
         self.search_entry.set_sensitive(bool(servers))
         self.export_backup_item.set_sensitive(bool(servers))
         self.on_selection_changed(self.view.get_selection())
@@ -606,10 +660,51 @@ class ServersDialog(Gtk.Dialog):
             return None
         return self.store.get(model[tree_iter][COLUMN_ID])
 
+    def selected_group(self):
+        """The group of the selected row: the group itself, or the one the
+        selected server belongs to. Empty when there is none."""
+        model, tree_iter = self.view.get_selection().get_selected()
+        if tree_iter is None:
+            return ""
+        if not model[tree_iter][COLUMN_ID]:
+            return model[tree_iter][COLUMN_NAME]
+        server = self.store.get(model[tree_iter][COLUMN_ID])
+        return server.group if server is not None else ""
+
     def on_selection_changed(self, selection):
         has_server = self.selected_server() is not None
         for button in (self.connect_button, self.sftp_button, self.edit_button, self.remove_button):
             button.set_sensitive(has_server)
+        self.group_color_button.set_sensitive(bool(self.selected_group()))
+
+    def on_button_press(self, view, event):
+        if event.button != Gdk.BUTTON_SECONDARY:
+            return False
+        hit = view.get_path_at_pos(int(event.x), int(event.y))
+        if hit is None:
+            return False
+        view.set_cursor(hit[0], None, False)
+        self.context_menu = self._build_context_menu()
+        self.context_menu.popup_at_pointer(event)
+        return True
+
+    def _build_context_menu(self):
+        menu = Gtk.Menu()
+        if self.selected_server() is not None:
+            self._menu_item(menu, _("Connect"), self.on_connect)
+            self._menu_item(menu, _("Browse files over SFTP"), self.on_sftp)
+            menu.append(Gtk.SeparatorMenuItem())
+            self._menu_item(menu, _("Edit..."), self.on_edit)
+            self._menu_item(menu, _("Remove"), self.on_remove)
+        group = self.selected_group()
+        if group:
+            if menu.get_children():
+                menu.append(Gtk.SeparatorMenuItem())
+            item = Gtk.MenuItem(label=_("Color of group {group}").format(group=group))
+            item.set_submenu(self._group_color_menu(group))
+            menu.append(item)
+        menu.show_all()
+        return menu
 
     def on_row_activated(self, view, path, column):
         if self.selected_server() is not None:
@@ -635,6 +730,34 @@ class ServersDialog(Gtk.Dialog):
         self.response(Gtk.ResponseType.CLOSE)
         self.guake.open_sftp_panel(server)
 
+    # -- group colour ----------------------------------------------------------
+
+    def _group_color_menu(self, group):
+        current = self.store.group_color(group) if self.store.has_group_color(group) else ""
+        return mk_color_menu(current, lambda item, color: self.set_group_color(group, color))
+
+    def on_group_color(self, button):
+        group = self.selected_group()
+        if not group:
+            return
+        # Keep a reference or the menu is collected while shown.
+        self.color_menu = self._group_color_menu(group)
+        self.color_menu.popup_at_widget(
+            button, Gdk.Gravity.NORTH_WEST, Gdk.Gravity.SOUTH_WEST, None
+        )
+
+    def set_group_color(self, group, color):
+        """Paint every server of ``group`` (list, tabs) in ``color``; an
+        empty colour goes back to the automatic one."""
+        selected = self.selected_server()
+        self.store.set_group_color(group, color)
+        self.refresh(select_id=selected.id if selected else None, select_group=group)
+        self._refresh_tabs()
+
+    def _refresh_tabs(self):
+        if hasattr(self.guake, "refresh_server_tabs"):
+            self.guake.refresh_server_tabs()
+
     def on_add(self, *args):
         dialog = ServerEditDialog(self, self.store)
         server = dialog.run_and_save()
@@ -650,8 +773,8 @@ class ServersDialog(Gtk.Dialog):
         saved = dialog.run_and_save()
         dialog.destroy()
         self.refresh(select_id=saved.id if saved else server.id)
-        if saved is not None and hasattr(self.guake, "refresh_server_tabs"):
-            self.guake.refresh_server_tabs()
+        if saved is not None:
+            self._refresh_tabs()
 
     def on_remove(self, *args):
         server = self.selected_server()
@@ -690,18 +813,16 @@ class ServersDialog(Gtk.Dialog):
         self.refresh(select_id=added[0].id if added else None)
 
     def on_export_backup(self, *args):
-        export_servers(self, self.store.servers)
+        export_servers(self, self.store.servers, self.store.group_colors)
 
     def on_sync(self, *args):
         if sync_servers(self, self.guake):
             self.refresh()
-            if hasattr(self.guake, "refresh_server_tabs"):
-                self.guake.refresh_server_tabs()
+            self._refresh_tabs()
 
     def on_import_backup(self, *args):
         summary = import_servers(self, self.store)
         if summary is not None:
             changed = [*summary.added, *summary.updated]
             self.refresh(select_id=changed[0].id if changed else None)
-            if hasattr(self.guake, "refresh_server_tabs"):
-                self.guake.refresh_server_tabs()
+            self._refresh_tabs()

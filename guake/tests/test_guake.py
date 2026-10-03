@@ -318,11 +318,14 @@ def test_server_tab_survives_save_and_restore(g):
 class StubSftpPanel(Gtk.Box):
     """Stands in for the real panel: no sftp process, just the wiring."""
 
-    def __init__(self, window, server_name, session_factory, on_close, color="", subtitle=""):
+    def __init__(
+        self, window, server_name, session_factory, on_close, color="", subtitle="", group=""
+    ):
         super().__init__()
         self.server_name = server_name
         self.color = color
         self.subtitle = subtitle
+        self.group = group
         self.session_factory = session_factory
         self.on_close = on_close
         self.view = Gtk.TreeView()
@@ -357,6 +360,29 @@ def test_open_sftp_panel_places_panel_next_to_terminal(g, stub_panel):
     panel.close()
     assert root.sftp_panel is None
     assert root.paned.get_child2() is None
+
+
+def test_sftp_panel_and_tab_take_the_color_of_the_server_group(g, stub_panel):
+    server = Server(name="web", host="10.0.0.5", id="web", group="Prod")
+    g.servers.add(server)
+    g.servers.set_group_color("Prod", "#e62d42")
+
+    panel = g.open_sftp_panel(server)
+    assert (panel.color, panel.group) == ("#e62d42", "Prod")
+
+    nb = g.get_notebook()
+    label = nb.get_tab_label(nb.get_nth_page(nb.get_current_page()))
+    label.set_server(server)
+    assert label.color == "#e62d42"
+    assert "Prod" in label.get_tooltip_text()
+
+    # Repainting after the group colour changed follows the new colour.
+    g.servers.set_group_color("Prod", "#3a944a")
+    g.refresh_server_tabs()
+    assert label.color == "#3a944a"
+    # A colour picked on the tab itself still wins.
+    label.set_user_color("#3584e4")
+    assert label.color == "#3584e4"
 
 
 def test_toggle_sftp_panel_needs_a_server_tab(g, stub_panel):

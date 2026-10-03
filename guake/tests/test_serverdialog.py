@@ -7,10 +7,13 @@ import pytest
 
 from gi.repository import Gtk
 
+from guake import addonstyle
 from guake.menus import mk_servers_menu
 from guake.notebook import TerminalNotebook
+from guake.serverdialog import COLUMN_COLOR
 from guake.serverdialog import ServerEditDialog
 from guake.serverdialog import ServersDialog
+from guake.serverdialog import count_summary
 from guake.serverdialog import server_detail
 from guake.servers import Server
 from guake.servers import ServerStore
@@ -446,3 +449,139 @@ def test_import_asks_before_accepting_servers_that_run_commands(guake, mocker, t
     assert dialogs.import_servers(Gtk.Window(), guake.servers) is None
     assert confirm.call_args[0][1] == [evil]
     assert guake.servers.servers == []
+
+
+# --- group colours -----------------------------------------------------------------
+
+
+def select_row(dialog, path):
+    dialog.view.set_cursor(Gtk.TreePath.new_from_string(path), None, False)
+
+
+def test_manager_rows_are_painted_in_the_group_color(guake):
+    guake.servers.add(Server(name="web", host="h", group="Prod"))
+    guake.servers.add(Server(name="db", host="h", group="Prod", color="#3584e4"))
+    guake.servers.set_group_color("Prod", "#e62d42")
+    dialog = ServersDialog(guake)
+
+    group_row = dialog.model[0]
+    assert group_row[COLUMN_COLOR] == "#e62d42"
+    colors = {child[1]: child[COLUMN_COLOR] for child in group_row.iterchildren()}
+    assert colors == {"web": "#e62d42", "db": "#3584e4"}
+    dialog.destroy()
+
+
+def test_group_color_button_follows_the_selection(guake):
+    guake.servers.add(Server(name="solo", host="h"))
+    guake.servers.add(Server(name="web", host="h", group="Prod"))
+    dialog = ServersDialog(guake)
+
+    select_row(dialog, "0")
+    assert dialog.selected_group() == "" and not dialog.group_color_button.get_sensitive()
+    select_row(dialog, "1")
+    assert dialog.selected_group() == "Prod" and dialog.group_color_button.get_sensitive()
+    assert not dialog.connect_button.get_sensitive()
+    select_row(dialog, "1:0")
+    assert dialog.selected_group() == "Prod" and dialog.group_color_button.get_sensitive()
+    dialog.destroy()
+
+
+def test_picking_a_group_color_repaints_rows_and_tabs(guake):
+    guake.refresh_server_tabs = mock.Mock()
+    guake.servers.add(Server(name="web", host="h", group="Prod", id="web"))
+    dialog = ServersDialog(guake)
+    select_row(dialog, "0:0")
+
+    dialog.set_group_color("Prod", "#3a944a")
+
+    assert guake.servers.group_color("Prod") == "#3a944a"
+    assert dialog.model[0][COLUMN_COLOR] == "#3a944a"
+    assert dialog.selected_server().id == "web"
+    guake.refresh_server_tabs.assert_called_once_with()
+
+    # The menu ticks the picked colour, and "Automatic" once it is reset.
+    menu = dialog._group_color_menu("Prod")  # pylint: disable=protected-access
+    assert [i.get_active() for i in menu.get_children()].index(True) == 3
+    dialog.set_group_color("Prod", "")
+    menu = dialog._group_color_menu("Prod")  # pylint: disable=protected-access
+    assert menu.get_children()[0].get_active()
+    dialog.destroy()
+
+
+def test_context_menu_offers_server_actions_and_the_group_color(guake):
+    guake.servers.add(Server(name="solo", host="h"))
+    guake.servers.add(Server(name="web", host="h", group="Prod"))
+    dialog = ServersDialog(guake)
+
+    select_row(dialog, "0")
+    labels = menu_labels(dialog._build_context_menu())  # pylint: disable=protected-access
+    assert labels == ["Connect", "Browse files over SFTP", "Edit...", "Remove"]
+    select_row(dialog, "1")
+    labels = menu_labels(dialog._build_context_menu())  # pylint: disable=protected-access
+    assert labels == ["Color of group Prod"]
+    dialog.destroy()
+
+
+def test_title_bar_counts_servers_and_groups(guake):
+    assert count_summary([]) == ""
+    assert count_summary([Server(name="a", host="h")]) == "1 server"
+    servers = [Server(name="a", host="h", group="x"), Server(name="b", host="h", group="y")]
+    assert count_summary(servers) == "2 servers · 2 groups"
+
+
+def test_servers_menu_marks_groups_and_servers_with_their_color(guake):
+    guake.servers.add(Server(name="web", host="h", group="Prod"))
+    guake.servers.set_group_color("Prod", "#e62d42")
+    menu = mk_servers_menu(guake)
+    assert menu_labels(menu)[0] == "Prod"
+    assert menu_labels(menu.get_children()[0].get_submenu()) == ["web"]
+
+
+# --- look ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dark", [True, False])
+def test_addon_css_is_valid_and_scoped_to_the_addon(dark):
+    css = addonstyle.addon_css(dark)
+    Gtk.CssProvider().load_from_data(css.encode())  # raises on a syntax error
+    assert "$" not in css
+    selectors = [
+        line.split("{")[0].strip()
+        for line in css.splitlines()
+        if "{" in line and not line.startswith(" ")
+    ]
+    assert selectors
+    for selector in selectors:
+        for part in selector.split(","):
+            if part.strip():
+                assert part.strip().startswith((".guake-", "#notebook-teminals")), selector
+
+
+def test_bundled_icons_are_found_and_unknown_ones_fall_back():
+    assert addonstyle.icon_name("server") == "guake-server-symbolic"
+    assert addonstyle.icon_name("no-such-icon") == addonstyle.DEFAULT_FALLBACK_ICON
+    assert addonstyle.colored_icon("server", "#e62d42", 16) is not None
+    assert addonstyle.colored_icon("server", "not a colour", 16) is None
+
+
+def test_every_icon_the_addon_uses_is_bundled():
+    import re
+
+    from pathlib import Path
+
+    import guake
+
+    root = Path(guake.__file__).parent
+    used = set()
+    for path in root.glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        used.update(
+            re.findall(r'addonstyle\.(?:image|icon_name|colored_icon)\(\s*"([a-z-]+)"', text)
+        )
+        used.update(re.findall(r'_icon_button\(\s*"([a-z-]+)"', text))
+    used.update(["folder", "file", "file-media", "file-pdf", "file-zip", "file-code"])
+    used.update(["file-binary", "file-symlink-file", "arrow-up", "arrow-down"])
+    missing = [
+        n for n in sorted(used) if not (root / "data/pixmaps" / f"guake-{n}-symbolic.svg").exists()
+    ]
+    assert not missing

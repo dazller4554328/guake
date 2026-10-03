@@ -4,6 +4,7 @@
 import json
 import shlex
 import subprocess
+import time
 
 import pytest
 
@@ -614,3 +615,104 @@ def test_file_without_sync_fields_still_loads(tmp_path):
     path.write_text(json.dumps({"schema_version": 1, "servers": [{"name": "a", "host": "h"}]}))
     loaded = srv.load_servers_file(path)
     assert loaded.servers[0].updated_at == 0.0 and loaded.deleted == {}
+
+
+# --- group colours ---------------------------------------------------------------
+
+
+def test_servers_of_a_group_share_its_color(store):
+    store.add(Server(name="a", host="h", group="Prod", id="a"))
+    store.add(Server(name="b", host="h", group="Prod", id="b"))
+    store.add(Server(name="c", host="h", group="Staging", id="c"))
+    store.set_group_color("Prod", "#E62D42")
+
+    assert store.color_for(store.get("a")) == store.color_for(store.get("b")) == "#e62d42"
+    assert store.group_color("Prod") == "#e62d42" and store.has_group_color("Prod")
+    # A group nobody picked a colour for gets a stable one from its name.
+    assert not store.has_group_color("Staging")
+    assert store.color_for(store.get("c")) == store.group_color("Staging")
+    assert store.group_color("Staging") == srv.group_color("staging ", {})
+
+
+def test_a_server_color_overrides_its_group_and_ungrouped_servers_keep_their_own(store):
+    store.set_group_color("Prod", "#e62d42")
+    special = Server(name="a", host="h", group="Prod", color="#3584e4")
+    solo = Server(name="solo", host="h", id="solo")
+    assert store.color_for(special) == "#3584e4"
+    assert store.color_for(solo) == srv.auto_color("solo")
+
+
+def test_group_colors_persist_and_survive_server_edits(tmp_path, store, web):
+    store.add(web)
+    store.set_group_color("Prod", "#e62d42")
+    store.update(web.with_changes(host="10.0.0.6"))
+
+    reloaded = ServerStore(store.path)
+    assert reloaded.group_color("Prod") == "#e62d42"
+    assert json.loads(store.path.read_text())["groups"]["Prod"]["color"] == "#e62d42"
+
+
+def test_resetting_a_group_color_goes_back_to_automatic(store):
+    store.set_group_color("Prod", "#e62d42")
+    store.set_group_color("Prod", "")
+    assert not store.has_group_color("Prod")
+    assert store.group_color("Prod") == srv.group_color("Prod", {})
+
+
+@pytest.mark.parametrize("group,color", [("Prod", "red"), ("Prod", "#12345"), ("  ", "#e62d42")])
+def test_set_group_color_rejects_bad_input(store, group, color):
+    with pytest.raises(ValueError):
+        store.set_group_color(group, color)
+
+
+def test_parse_group_colors_drops_malformed_entries():
+    raw = {
+        "Prod": {"color": "#E62D42", "updated_at": 5},
+        "bad colour": {"color": "javascript:alert(1)"},
+        "bad\x1b[2Jname": {"color": "#e62d42"},
+        "not a dict": "#e62d42",
+        "reset": {"color": ""},
+    }
+    assert srv.parse_group_colors(raw) == {
+        "Prod": srv.GroupColor("#e62d42", 5.0),
+        "reset": srv.GroupColor("", 0.0),
+    }
+    assert srv.parse_group_colors(["nope"]) == {}
+
+
+def test_apply_group_colors_keeps_the_newest_pick(store):
+    store.add(Server(name="a", host="h", group="Prod"))
+    store.add(Server(name="b", host="h", group="Staging"))
+    store.set_group_color("Prod", "#e62d42")
+    local = store.group_colors["Prod"]
+    changed = store.apply_group_colors(
+        {
+            "Prod": srv.GroupColor("#3584e4", local.at - 10),
+            "Staging": srv.GroupColor("#3a944a", 7.0),
+        }
+    )
+    assert changed == {"Staging": srv.GroupColor("#3a944a", 7.0)}
+    assert store.group_color("Prod") == "#e62d42"
+
+    store.set_group_color("Prod", "#e62d42")
+    # A time in the future counts as now, and still beats the older local pick;
+    # colours of groups with no server here are left out.
+    changed = store.apply_group_colors(
+        {"Prod": srv.GroupColor("#3584e4", 1e300), "Elsewhere": srv.GroupColor("#3584e4", 5.0)}
+    )
+    assert list(changed) == ["Prod"] and changed["Prod"].at <= time.time()
+    assert ServerStore(store.path).group_color("Prod") == "#3584e4"
+    store.set_group_color("Prod", "#9141ac")
+    assert store.group_color("Prod") == "#9141ac"
+
+
+def test_colors_with_a_trailing_newline_are_rejected():
+    assert not srv.COLOR_PATTERN.match("#aabbcc\n")
+    assert srv.parse_group_colors({"Prod": {"color": "#aabbcc\n"}}) == {}
+    assert srv.parse_group_colors({"x" * 201: {"color": "#aabbcc"}}) == {}
+
+
+def test_servers_file_without_groups_still_loads(tmp_path, web):
+    path = tmp_path / "servers.json"
+    path.write_text(json.dumps({"schema_version": 1, "servers": [web.to_dict()]}))
+    assert ServerStore(path).group_colors == {}

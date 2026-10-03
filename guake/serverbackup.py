@@ -48,7 +48,10 @@ from typing import Tuple
 
 from guake.servers import SERVERS_SCHEMA_VERSION
 from guake.servers import SSH_CONFIG_ID_PREFIX
+from guake.servers import GroupColor
 from guake.servers import Server
+from guake.servers import dump_group_colors
+from guake.servers import parse_group_colors
 
 try:
     from cryptography.exceptions import InvalidTag
@@ -108,6 +111,7 @@ class Secrets:
 class Backup:
     servers: List[Server]
     encrypted_secrets: Optional[dict] = None
+    groups: Dict[str, GroupColor] = field(default_factory=dict)
 
     @property
     def has_secrets(self) -> bool:
@@ -168,7 +172,10 @@ def _encrypt(secrets: Secrets, passphrase: str) -> dict:
 
 
 def build_backup(
-    servers: Iterable[Server], secrets: Optional[Secrets] = None, passphrase: str = ""
+    servers: Iterable[Server],
+    secrets: Optional[Secrets] = None,
+    passphrase: str = "",
+    groups: Optional[Dict[str, GroupColor]] = None,
 ) -> dict:
     """The backup document for ``servers``; ``secrets`` are encrypted with
     ``passphrase`` (required when there are secrets to include)."""
@@ -177,6 +184,7 @@ def build_backup(
         "version": BACKUP_VERSION,
         "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "servers": [s.to_dict() for s in servers],
+        "groups": dump_group_colors(groups or {}),
     }
     if secrets is not None and not secrets.is_empty():
         if not passphrase:
@@ -239,7 +247,11 @@ def load_backup(path: Path) -> Backup:
     secrets = data.get("secrets")
     if secrets is not None and not isinstance(secrets, dict):
         raise BackupError("The encrypted part of the backup is damaged.")
-    return Backup(servers=_parse_servers(data.get("servers")), encrypted_secrets=secrets)
+    return Backup(
+        servers=_parse_servers(data.get("servers")),
+        encrypted_secrets=secrets,
+        groups=parse_group_colors(data.get("groups", {})),
+    )
 
 
 def _kdf_parameters(enc: dict):

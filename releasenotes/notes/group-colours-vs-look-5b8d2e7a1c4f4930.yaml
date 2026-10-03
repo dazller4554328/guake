@@ -1,0 +1,11 @@
+features:
+  - |
+    Tabs are coloured by server group: every server of a group shares the
+    group's colour, shown as a tint over the whole tab, in the servers
+    window and on the SFTP panel. Pick it with *Group color* in the servers
+    window; a group without a picked colour gets one derived from its name.
+    Group colours are part of backups and of server sync.
+  - |
+    The servers window and the SFTP panel have a new Visual Studio style
+    look with the Codicons icon set. It only applies to these windows and
+    to the tab strip; the rest of Guake follows the GTK theme again.

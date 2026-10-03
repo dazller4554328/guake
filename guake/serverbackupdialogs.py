@@ -14,6 +14,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
+from guake import addonstyle
 from guake import serverbackup
 from guake import serversecrets
 
@@ -32,6 +33,7 @@ def _message(parent, message_type, text, secondary=None):
         buttons=Gtk.ButtonsType.OK,
         text=text,
     )
+    addonstyle.mark(dialog)
     if secondary:
         dialog.format_secondary_text(secondary)
     dialog.run()
@@ -65,6 +67,7 @@ class ExportDialog(Gtk.Dialog):
 
     def __init__(self, parent, count):
         super().__init__(title=_("Export servers"), transient_for=parent, modal=True)
+        addonstyle.mark(self)
         self.add_button(_("_Cancel"), Gtk.ResponseType.CANCEL)
         self.add_button(_("_Export..."), Gtk.ResponseType.OK).get_style_context().add_class(
             "suggested-action"
@@ -158,9 +161,9 @@ def _choose_file(parent, action, title, current_name=None):
     return filename
 
 
-def export_servers(parent, servers):
+def export_servers(parent, servers, groups=None):
     """Run the whole export: options, file name, writing. Returns the path
-    written, or None."""
+    written, or None. ``groups`` are the group colours to save along."""
     dialog = ExportDialog(parent, len(servers))
     options = dialog.run_for_options()
     dialog.destroy()
@@ -179,7 +182,8 @@ def export_servers(parent, servers):
     secrets = serverbackup.collect_secrets(servers, serversecrets) if include_secrets else None
     try:
         serverbackup.write_backup(
-            path, serverbackup.build_backup(servers, secrets, passphrase=passphrase)
+            path,
+            serverbackup.build_backup(servers, secrets, passphrase=passphrase, groups=groups),
         )
     except (OSError, ValueError) as e:
         log.error("Cannot export servers to %s: %s", path, e)
@@ -206,6 +210,7 @@ class PassphraseDialog(Gtk.Dialog):
 
     def __init__(self, parent):
         super().__init__(title=_("Import servers"), transient_for=parent, modal=True)
+        addonstyle.mark(self)
         self.add_button(_("_Cancel"), Gtk.ResponseType.CANCEL)
         self.add_button(_("Import _without passwords"), self.SKIP)
         self.add_button(_("_Import"), Gtk.ResponseType.OK).get_style_context().add_class(
@@ -279,6 +284,7 @@ def confirm_risky_servers(parent, servers):
         buttons=Gtk.ButtonsType.NONE,
         text=_("Check these server settings before importing"),
     )
+    addonstyle.mark(dialog)
     dialog.format_secondary_text(
         _(
             "They run commands or route the connection when you connect. Only import "
@@ -321,6 +327,7 @@ def import_servers(parent, store):
             if secrets is None:
                 return None
         summary = serverbackup.import_backup(store, backup.servers, secrets, serversecrets)
+        store.apply_group_colors(backup.groups)
     except (serverbackup.BackupError, OSError, ValueError) as e:
         log.error("Cannot import servers from %s: %s", path, e)
         _message(parent, Gtk.MessageType.ERROR, _("The backup could not be imported."), str(e))

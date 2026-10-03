@@ -79,6 +79,7 @@ from guake.utils import RectCalculator
 from guake.utils import TabNameUtils
 from guake.utils import get_server_time
 from guake.utils import save_tabs_when_changed
+from guake import addonstyle
 from guake import serversecrets
 from guake.serverdialog import ServersDialog
 from guake.sftp import SftpSession
@@ -158,6 +159,7 @@ class Guake(SimpleGladeApp):
 
         select_gtk_theme(self.settings)
         patch_gtk_theme(self.get_widget("window-root").get_style_context(), self.settings)
+        addonstyle.install(self.get_widget("window-root").get_style_context(), self.settings)
         self.add_callbacks(self)
 
         log.info("Guake Terminal %s", guake_version())
@@ -1406,6 +1408,7 @@ class Guake(SimpleGladeApp):
             buttons=Gtk.ButtonsType.OK,
             text=text,
         )
+        addonstyle.mark(dialog)
         dialog.format_secondary_text(secondary)
         dialog.run()
         dialog.destroy()
@@ -1599,6 +1602,10 @@ class Guake(SimpleGladeApp):
                 target=self.server_sharing.reconcile, name="guake-sharing", daemon=True
             ).start()
         return True
+
+    def server_color(self, server):
+        """Colour ``server`` is shown in: its own, else its group's."""
+        return self.servers.color_for(server)
 
     def refresh_server_tabs(self):
         """Repaint the tabs after servers were edited (name, colour...)."""

@@ -18,6 +18,7 @@ Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
 Boston, MA 02110-1301 USA
 """
 
+from guake import addonstyle
 from guake.about import AboutDialog
 from guake.boxes import RootTerminalBox
 from guake.boxes import TabLabelEventBox
@@ -109,7 +110,7 @@ class TerminalNotebook(Gtk.Notebook):
         self.new_page_button.connect("clicked", self.on_new_tab)
 
         self.servers_button = Gtk.Button(
-            image=Gtk.Image.new_from_icon_name("network-server-symbolic", Gtk.IconSize.MENU),
+            image=addonstyle.image("server"),
             visible=True,
         )
         self.servers_button.set_tooltip_text(_("Servers"))
@@ -117,7 +118,7 @@ class TerminalNotebook(Gtk.Notebook):
         self.servers_menu = None
 
         self.sftp_button = Gtk.Button(
-            image=Gtk.Image.new_from_icon_name("folder-remote-symbolic", Gtk.IconSize.MENU),
+            image=addonstyle.image("remote-explorer"),
             visible=True,
         )
         self.sftp_button.set_tooltip_text(_("SFTP file transfer"))

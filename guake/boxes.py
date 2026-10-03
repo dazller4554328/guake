@@ -20,7 +20,8 @@ from guake.globals import PCRE2_MULTILINE
 from guake.menus import mk_tab_context_menu
 from guake.menus import mk_terminal_context_menu
 from guake.sftppanel import SftpPanel
-from guake.tabcolors import auto_color
+from guake import addonstyle
+from guake.servers import server_color
 from guake.tabcolors import tab_css
 from guake.utils import HidePrevention
 from guake.utils import TabNameUtils
@@ -233,8 +234,9 @@ class RootTerminalBox(Gtk.Overlay, TerminalHolder):
             server.name,
             self.guake.sftp_session_factory(server),
             self.close_sftp_panel,
-            color=server.color or auto_color(server.id),
+            color=self.guake.server_color(server),
             subtitle=f"{server.target}{port}",
+            group=server.group,
         )
         panel.server_id = server.id
         self.sftp_panel = panel
@@ -746,7 +748,7 @@ class TabLabelEventBox(Gtk.EventBox):
         self.server = None
         self.box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, visible=True)
         self.box.get_style_context().add_class("guake-tab-label")
-        self.icon = Gtk.Image.new_from_icon_name("network-server-symbolic", Gtk.IconSize.MENU)
+        self.icon = addonstyle.image("server")
         self.icon.set_no_show_all(True)
         self.label = Gtk.Label(label=text, visible=True)
         self.close_button = Gtk.Button(
@@ -780,23 +782,31 @@ class TabLabelEventBox(Gtk.EventBox):
     @property
     def color(self):
         """The colour painted on the tab: the user's pick, else the server's
-        own colour, else an automatic one for server tabs, else none."""
+        own colour, else its group's, else none (a plain terminal)."""
         if self.user_color:
             return self.user_color
         if self.server is not None:
-            return self.server.color or auto_color(self.server.id)
+            return server_color(self.server, self._group_colors())
         return ""
+
+    def _group_colors(self):
+        store = getattr(getattr(self.notebook, "guake", None), "servers", None)
+        return store.group_colors if store is not None else {}
 
     def set_server(self, server):
         """Mark the tab as connected to ``server`` (icon, colour, tooltip)."""
         self.server = server
         self.icon.set_visible(server is not None)
-        self.set_tooltip_text(
-            _("Connected to {name} ({target})").format(name=server.name, target=server.target)
-            if server is not None
-            else None
-        )
+        self.set_tooltip_text(self._server_tooltip(server) if server is not None else None)
         self._render_color()
+
+    @staticmethod
+    def _server_tooltip(server):
+        if server.group:
+            return _("{name} ({target}) \u2014 group {group}").format(
+                name=server.name, target=server.target, group=server.group
+            )
+        return _("Connected to {name} ({target})").format(name=server.name, target=server.target)
 
     def set_user_color(self, color):
         self.user_color = color or ""

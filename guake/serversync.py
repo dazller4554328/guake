@@ -39,12 +39,16 @@ from typing import NamedTuple
 from typing import Optional
 
 from guake.servers import CONTROL_CHARS
+from guake.servers import GroupColor
 from guake.servers import SERVERS_SCHEMA_VERSION
 from guake.servers import Server
 from guake.servers import ServersFile
 from guake.servers import Tombstone
+from guake.servers import dump_group_colors
 from guake.servers import dump_tombstones
 from guake.servers import is_ssh_config_server
+from guake.servers import newest_group_colors
+from guake.servers import parse_group_colors
 from guake.servers import parse_server_entries
 from guake.servers import parse_tombstones
 
@@ -200,6 +204,7 @@ def build_payload(servers_file: ServersFile) -> dict:
         "schema_version": SERVERS_SCHEMA_VERSION,
         "servers": [s.to_dict() for s in servers_file.servers if not is_ssh_config_server(s)],
         "deleted": dump_tombstones(servers_file.deleted),
+        "groups": dump_group_colors(servers_file.groups),
     }
 
 
@@ -283,7 +288,14 @@ def parse_payload(data, now: Optional[float] = None) -> Snapshot:
         sid: t._replace(at=_clamped(t.at, now))
         for sid, t in parse_tombstones(data.get("deleted", {})).items()
     }
-    return Snapshot(ServersFile(servers=servers, deleted=deleted), refused)
+    raw_groups = data.get("groups", {})
+    if isinstance(raw_groups, dict) and len(raw_groups) > MAX_SYNCED_SERVERS:
+        raise SyncError(_("too many groups"))
+    groups = {
+        name: entry._replace(at=_clamped(entry.at, now))
+        for name, entry in parse_group_colors(raw_groups).items()
+    }
+    return Snapshot(ServersFile(servers=servers, deleted=deleted, groups=groups), refused)
 
 
 # -- planning ------------------------------------------------------------------
@@ -411,6 +423,23 @@ def _with_review(change: Change) -> Change:
     # before sync existed. Offer it, but let the user decide.
     stale = change.kind == UPDATE and change.when <= change.previous.updated_at
     return replace(change, recommended=not (warning or stale), warning=warning)
+
+
+def plan_group_colors(
+    local: Dict[str, GroupColor], peers: Dict[str, ServersFile]
+) -> Dict[str, GroupColor]:
+    """Group colours picked more recently on another device than here, for
+    the groups that device actually has servers in."""
+    used = [
+        {name: entry for name, entry in peer.groups.items() if name in _groups_of(peer)}
+        for peer in peers.values()
+    ]
+    merged = newest_group_colors(local, *used)
+    return {name: entry for name, entry in merged.items() if local.get(name) != entry}
+
+
+def _groups_of(peer: ServersFile) -> set:
+    return {server.group for server in peer.servers}
 
 
 def needs_confirmation(change: Change) -> bool:

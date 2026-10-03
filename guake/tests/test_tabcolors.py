@@ -43,6 +43,28 @@ def test_tab_css_inactive_is_quieter_than_active():
     assert "1.0)" in active and "1.0)" not in inactive
 
 
+def test_tab_css_tints_the_whole_tab_more_strongly_when_active():
+    active = tabcolors.tab_css("#3584e4", active=True, tabs_at_bottom=True)
+    inactive = tabcolors.tab_css("#3584e4", active=False, tabs_at_bottom=True)
+    assert f"background-color: rgba(53, 132, 228, {tabcolors.ACTIVE_TINT_ALPHA})" in active
+    assert f"background-color: rgba(53, 132, 228, {tabcolors.INACTIVE_TINT_ALPHA})" in inactive
+    assert tabcolors.ACTIVE_TINT_ALPHA > tabcolors.INACTIVE_TINT_ALPHA
+
+
+@pytest.mark.parametrize(
+    "color,expected",
+    [
+        ("#ffffff", "#000000"),
+        ("#f6d32d", "#000000"),
+        ("#000000", "#ffffff"),
+        ("#9141ac", "#ffffff"),
+    ],
+)
+def test_text_color_on_picks_the_readable_one(color, expected):
+    assert tabcolors.text_color_on(color) == expected
+
+
 def test_tab_css_without_color_keeps_a_transparent_edge():
     css = tabcolors.tab_css("", active=False, tabs_at_bottom=True)
-    assert "transparent" in css
+    assert "border-top: 3px solid transparent" in css
+    assert "background-color: transparent" in css

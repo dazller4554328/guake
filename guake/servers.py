@@ -30,12 +30,19 @@ Servers are persisted as JSON in ``~/.config/guake/servers.json``::
         ],
         "deleted": {
             "c7f1...": {"at": 1759219000.0, "name": "old-box"}
+        },
+        "groups": {
+            "Production": {"color": "#e62d42", "updated_at": 1759218500.0}
         }
     }
 
 ``updated_at`` is when the entry last changed and ``deleted`` remembers
 recently removed servers. Both let :mod:`guake.serversync` tell a server
 edited or removed on another device from one that was never there.
+
+``groups`` holds the colour picked for a group. Every server of the group
+that has no colour of its own is shown in it (tab, server list, SFTP panel);
+a group without an entry gets a colour derived from its name.
 
 Passwords are never written to this file. When ``use_password`` is true the
 password is stored in the desktop keyring (see :mod:`guake.serversecrets`)
@@ -65,6 +72,7 @@ from typing import Optional
 from typing import Tuple
 
 from guake.tabcolors import COLOR_PATTERN
+from guake.tabcolors import auto_color
 
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -78,6 +86,7 @@ SSH_CONFIG_ID_PREFIX = "sshconfig:"
 # Deleted servers are remembered this long so that a sync with a device that
 # still has them offers to delete them instead of bringing them back.
 TOMBSTONE_MAX_AGE = 180 * 24 * 3600
+MAX_GROUP_NAME_LENGTH = 200
 
 # sshpass exit statuses (see sshpass(1)).
 SSHPASS_HOST_KEY_UNKNOWN = 6
@@ -227,6 +236,71 @@ def prune_tombstones(
     }
 
 
+class GroupColor(NamedTuple):
+    """The colour picked for a group; empty means "back to automatic"."""
+
+    color: str
+    at: float = 0.0
+
+
+def parse_group_colors(raw) -> Dict[str, GroupColor]:
+    """Group colours from the servers file or a sync payload; malformed
+    entries are dropped."""
+    colors = {}
+    for name, entry in raw.items() if isinstance(raw, dict) else ():
+        if not isinstance(name, str) or not name.strip() or CONTROL_CHARS.search(name):
+            continue
+        if len(name) > MAX_GROUP_NAME_LENGTH:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        color = entry.get("color", "")
+        if not isinstance(color, str) or (color and not COLOR_PATTERN.match(color)):
+            continue
+        when = entry.get("updated_at", 0.0)
+        colors[name] = GroupColor(
+            color=color.lower(), at=float(when) if _is_timestamp(when) else 0.0
+        )
+    return colors
+
+
+def dump_group_colors(colors: Dict[str, GroupColor]) -> dict:
+    return {
+        name: {"color": entry.color, "updated_at": entry.at}
+        for name, entry in sorted(colors.items())
+    }
+
+
+def newest_group_colors(*sources: Dict[str, GroupColor]) -> Dict[str, GroupColor]:
+    """Merge group colours, the most recently picked one winning; the
+    earlier source wins a tie."""
+    merged: Dict[str, GroupColor] = {}
+    for source in sources:
+        for name, entry in source.items():
+            if name not in merged or entry.at > merged[name].at:
+                merged[name] = entry
+    return merged
+
+
+def group_color(group: str, colors: Dict[str, GroupColor]) -> str:
+    """Colour of ``group``: the one picked for it, else one derived from
+    its name (the same on every device)."""
+    saved = colors.get(group)
+    if saved is not None and saved.color:
+        return saved.color
+    return auto_color(f"group:{group.strip().lower()}")
+
+
+def server_color(server: Server, colors: Dict[str, GroupColor]) -> str:
+    """Colour a server is shown in: its own, else its group's, else (for an
+    ungrouped server) an automatic one."""
+    if server.color:
+        return server.color
+    if server.group:
+        return group_color(server.group, colors)
+    return auto_color(server.id)
+
+
 def sort_key(server: Server) -> Tuple[str, str]:
     return (server.group.lower(), server.name.lower())
 
@@ -243,6 +317,7 @@ def group_servers(servers: Iterable[Server]) -> List[Tuple[str, List[Server]]]:
 class ServersFile(NamedTuple):
     servers: List[Server]
     deleted: Dict[str, Tombstone]
+    groups: Dict[str, GroupColor] = {}
 
 
 def parse_server_entries(raw_servers) -> List[Server]:
@@ -259,7 +334,7 @@ def parse_server_entries(raw_servers) -> List[Server]:
 def load_servers_file(path: Path) -> ServersFile:
     """Read the servers file. A missing file yields no servers. A broken
     file is logged and also yields no servers, so Guake keeps working."""
-    empty = ServersFile(servers=[], deleted={})
+    empty = ServersFile(servers=[], deleted={}, groups={})
     path = Path(path)
     if not path.exists():
         return empty
@@ -283,6 +358,7 @@ def load_servers_file(path: Path) -> ServersFile:
     return ServersFile(
         servers=parse_server_entries(data["servers"]),
         deleted=parse_tombstones(data.get("deleted", {})),
+        groups=parse_group_colors(data.get("groups", {})),
     )
 
 
@@ -291,7 +367,10 @@ def load_servers(path: Path) -> List[Server]:
 
 
 def save_servers(
-    path: Path, servers: Iterable[Server], deleted: Optional[Dict[str, Tombstone]] = None
+    path: Path,
+    servers: Iterable[Server],
+    deleted: Optional[Dict[str, Tombstone]] = None,
+    groups: Optional[Dict[str, GroupColor]] = None,
 ) -> None:
     """Write the servers file atomically (write to a temp file, then rename)."""
     path = Path(path)
@@ -300,6 +379,7 @@ def save_servers(
         "schema_version": SERVERS_SCHEMA_VERSION,
         "servers": [s.to_dict() for s in sorted(servers, key=sort_key)],
         "deleted": dump_tombstones(deleted or {}),
+        "groups": dump_group_colors(groups or {}),
     }
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8") as f:
@@ -326,6 +406,7 @@ class ServerStore:
         self.path = Path(path)
         self._servers: List[Server] = []
         self._deleted: Dict[str, Tombstone] = {}
+        self._groups: Dict[str, GroupColor] = {}
         self.reload()
 
     @property
@@ -340,6 +421,7 @@ class ServerStore:
         loaded = load_servers_file(self.path)
         self._servers = loaded.servers
         self._deleted = loaded.deleted
+        self._groups = loaded.groups
         return self.servers
 
     def get(self, server_id: str) -> Optional[Server]:
@@ -351,6 +433,49 @@ class ServerStore:
 
     def groups(self) -> List[str]:
         return sorted({s.group for s in self._servers if s.group}, key=str.lower)
+
+    @property
+    def group_colors(self) -> Dict[str, GroupColor]:
+        return dict(self._groups)
+
+    def group_color(self, group: str) -> str:
+        return group_color(group, self._groups)
+
+    def has_group_color(self, group: str) -> bool:
+        """Whether a colour was picked for ``group`` (it is not automatic)."""
+        return bool(self._groups.get(group, GroupColor("")).color)
+
+    def color_for(self, server: Server) -> str:
+        return server_color(server, self._groups)
+
+    def set_group_color(self, group: str, color: str) -> None:
+        """Pick the colour of ``group``; an empty colour goes back to the
+        automatic one. The choice is remembered with its time so the newest
+        one wins a sync."""
+        if color and not COLOR_PATTERN.match(color):
+            raise ValueError(f"Invalid colour for group {group!r}: {color!r}")
+        if not group.strip():
+            raise ValueError("A group needs a name")
+        groups = {**self._groups, group: GroupColor(color=color.lower(), at=time.time())}
+        self._commit(self._servers, groups=groups)
+
+    def apply_group_colors(self, incoming: Dict[str, GroupColor]) -> Dict[str, GroupColor]:
+        """Take the group colours picked more recently on another device (or
+        saved in a backup), for the groups in use here. Returns the entries
+        that changed. A time in the future counts as now, or that entry
+        would win every later comparison."""
+        now = time.time()
+        live = set(self.groups())
+        incoming = {
+            name: entry._replace(at=min(entry.at, now))
+            for name, entry in incoming.items()
+            if name in live
+        }
+        merged = newest_group_colors(self._groups, incoming)
+        changed = {name: entry for name, entry in merged.items() if self._groups.get(name) != entry}
+        if changed:
+            self._commit(self._servers, groups=merged)
+        return changed
 
     def add(self, server: Server) -> List[Server]:
         return self._commit([*self._servers, server])
@@ -430,6 +555,7 @@ class ServerStore:
         servers: List[Server],
         deleted: Optional[Dict[str, Tombstone]] = None,
         stamp: bool = True,
+        groups: Optional[Dict[str, GroupColor]] = None,
     ) -> List[Server]:
         now = time.time()
         if stamp:
@@ -437,9 +563,11 @@ class ServerStore:
         tombstones = prune_tombstones(
             self._deleted if deleted is None else deleted, (s.id for s in servers), now
         )
-        save_servers(self.path, servers, tombstones)
+        groups = self._groups if groups is None else groups
+        save_servers(self.path, servers, tombstones, groups)
         self._servers = sorted(servers, key=sort_key)
         self._deleted = tombstones
+        self._groups = groups
         return self.servers
 
 

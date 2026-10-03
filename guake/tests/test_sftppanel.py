@@ -245,16 +245,28 @@ def test_breadcrumbs_fold_the_middle_of_a_long_path():
 @pytest.mark.parametrize(
     "name,is_dir,expected",
     [
-        ("photos", True, "folder-symbolic"),
-        ("cat.png", False, "image-x-generic-symbolic"),
-        ("notes.txt", False, "text-x-generic-symbolic"),
-        ("backup.tar.gz", False, "package-x-generic-symbolic"),
+        ("photos", True, "folder"),
+        ("cat.png", False, "file-media"),
+        ("notes.txt", False, "file"),
+        ("backup.tar.gz", False, "file-zip"),
+        ("deploy.sh", False, "file-code"),
+        ("config.json", False, "file-code"),
+        ("report.pdf", False, "file-pdf"),
     ],
 )
 def test_file_icon_follows_the_content_type(name, is_dir, expected):
+    from guake.sftppanel import file_icon
     from guake.sftppanel import file_icon_name
 
-    assert file_icon_name(name, "dir" if is_dir else "file") == expected
+    kind = "dir" if is_dir else "file"
+    assert file_icon(name, kind) == expected
+    assert file_icon_name(name, kind) == f"guake-{expected}-symbolic"
+
+
+def test_links_get_their_own_icon():
+    from guake.sftppanel import file_icon
+
+    assert file_icon("current", "link") == "file-symlink-file"
 
 
 @needs_sftp
@@ -267,13 +279,15 @@ def test_panel_header_breadcrumbs_and_transfer_hint(remote, dialogs):
         lambda p: None,
         color="#e62d42",
         subtitle="root@web",
+        group="Prod",
     )
     window.add(panel)
     window.show_all()
     try:
         assert pump(lambda: panel.current_dir is not None)
         assert panel.subtitle_label.get_text() == "root@web"
-        labels = [b.get_label() for b in panel.crumbs.get_children()]
+        assert panel.group_label.get_text() == "Prod"
+        labels = [b.get_label() for b in panel.crumb_buttons()]
         assert labels[-1] == os.path.basename(panel.current_dir)
         assert panel.transfer_stack.get_visible_child_name() == "empty"
 

@@ -148,11 +148,16 @@ declared in ``~/.ssh/config`` are listed automatically in the servers menu,
 and *Import hosts from ~/.ssh/config* in the manager's menu copies them into
 the saved list so they can be edited.
 
-Each server has a tab colour: pick one in the editor, or leave it on *Auto*
-for a colour derived from the server. Server tabs show that colour and a
-server icon; the current tab is painted more strongly. Any tab, local or not,
-can be given a colour from its right-click *Tab Color* menu, and that choice
-is kept with the saved tab session.
+Tabs are coloured by group, so you can tell at a glance which set of machines
+a tab belongs to: every server of a group shares the group's colour, shown as
+a tint over the whole tab (stronger on the current one), on the server's row
+in the servers window and on the SFTP panel. Pick a group's colour in the
+servers window: select the group (or one of its servers) and press *Group
+color*, or right-click it. A group you have not picked a colour for gets one
+derived from its name. A server can still be given a colour of its own in the
+editor (leave it on *Auto* to follow the group), and any tab can be given a
+colour from its right-click *Tab Color* menu; that choice wins and is saved
+with the tab. Group colours are included in backups and in server sync.
 
 The first time you connect to a server with a saved password, ssh does not
 know its host key yet and ``sshpass`` refuses to answer that question for
