@@ -28,7 +28,6 @@ from guake.sftp import format_size
 from guake.sftp import remote_join
 from guake.sftp import remote_parent
 from guake.tabcolors import is_valid_color
-from guake.tabcolors import rgba
 from guake.utils import HidePrevention
 
 log = logging.getLogger(__name__)
@@ -47,7 +46,6 @@ DOWNLOAD = "download"
 UPLOAD = "upload"
 BREADCRUMB_SEGMENTS = 3
 ELLIPSIS = "\u2026"
-HEADER_TINT_ALPHA = 0.05
 
 
 def breadcrumb_segments(path, max_segments=BREADCRUMB_SEGMENTS):
@@ -113,6 +111,7 @@ class SftpPanel(Gtk.Box):
     def __init__(self, window, server_name, session_factory, on_close, color="", subtitle=""):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.get_style_context().add_class("background")
+        self.get_style_context().add_class("guake-sftp-panel")
         self.window = window
         self.server_name = server_name
         self.color = color
@@ -154,8 +153,7 @@ class SftpPanel(Gtk.Box):
                 (
                     ".guake-sftp-header {"
                     f" border-left: 3px solid {self.color};"
-                    f" background-color: {rgba(self.color, HEADER_TINT_ALPHA)};"
-                    " border-radius: 6px; padding: 10px 6px 10px 12px; }"
+                    " border-radius: 0; padding: 10px 6px 10px 12px; }"
                 ).encode()
             )
             header.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)

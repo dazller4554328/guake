@@ -5,7 +5,7 @@ a stable automatic colour per server, and the CSS that paints a tab.
 
 The tab itself is a node of the GtkNotebook and cannot be styled one by one,
 so the colour goes on the tab's label box (see
-:class:`guake.boxes.TabLabelEventBox`): a soft tint plus a bar on the edge
+:class:`guake.boxes.TabLabelEventBox`): a flat transparent label with a bar on the edge
 facing the terminal, bolder on the current tab.
 """
 
@@ -33,9 +33,7 @@ PALETTE: List[Tuple[str, str]] = [
 
 ACCENT_WIDTH_PX = 3
 ACTIVE_BAR_ALPHA = 1.0
-ACTIVE_TINT_ALPHA = 0.10
 INACTIVE_BAR_ALPHA = 0.55
-INACTIVE_TINT_ALPHA = 0.025
 
 
 def is_valid_color(value: str) -> bool:
@@ -61,14 +59,13 @@ def tab_css(color: str, active: bool, tabs_at_bottom: bool) -> str:
     edge = "top" if tabs_at_bottom else "bottom"
     if is_valid_color(color):
         bar = rgba(color, ACTIVE_BAR_ALPHA if active else INACTIVE_BAR_ALPHA)
-        tint = rgba(color, ACTIVE_TINT_ALPHA if active else INACTIVE_TINT_ALPHA)
     else:
-        bar = tint = "transparent"
+        bar = "transparent"
     return (
         ".guake-tab-label {"
         f" border-{edge}: {ACCENT_WIDTH_PX}px solid {bar};"
-        f" background-color: {tint};"
-        " border-radius: 6px;"
-        " padding: 4px 10px;"
+        " background-color: transparent;"
+        " border-radius: 0;"
+        " padding: 6px 12px;"
         " }"
     )
