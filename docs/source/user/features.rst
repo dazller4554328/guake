@@ -213,12 +213,40 @@ on each computer you want up to date.
 Passwords and key files are never shared (use an encrypted backup for
 those); names, hosts, users, key paths, SSH options and commands are.
 
+Master password
+---------------
+
+*Master password...* in the menu at the top right of the server manager makes
+Guake ask for a password when it starts. Your servers and their passwords are
+then kept in ``~/.config/guake/servers.vault``, encrypted with a key derived
+from that password (scrypt, AES-256-GCM): ``servers.json`` is deleted and the
+passwords leave the desktop keyring. Without the master password the file
+cannot be read. It needs ``python3-cryptography``.
+
+- Cancelling the question at startup quits Guake.
+- *Lock Guake* in the servers menu hides the window; it comes back only with
+  the master password. Guake also locks itself once its window stayed hidden
+  for the time set in the same dialog (15 minutes by default, 0 for never).
+  Running terminals stay connected while Guake is locked.
+- While locked, Guake shares no servers with your other devices.
+- The same dialog changes the master password or removes it, which puts the
+  servers back in ``servers.json`` and the passwords back in the keyring.
+
+There is no way to recover a forgotten master password: keep an exported
+backup somewhere safe. The master password protects the saved servers and
+their passwords, and the saved tab session moves into the vault too. It does
+not encrypt the private key files in ``~/.ssh`` (give those their own
+passphrase) or what is on screen in a terminal. The old ``servers.json`` is
+deleted, not wiped: its content may remain in disk blocks or in backups made
+before.
+
 When a connection ends the tab stays open, shows why, and offers to reconnect
 (press ``r`` then Enter) or close (Enter). Server tabs are part of the saved
 tab session too: after a Guake restart they come back, but wait for you to
 press ``r`` before connecting, so Guake never dials every server at startup.
 
-Servers are stored in ``~/.config/guake/servers.json``. From the command line,
+Servers are stored in ``~/.config/guake/servers.json`` (in ``servers.vault``
+with a master password). From the command line,
 ``guake --server NAME`` opens a tab connected to the saved server ``NAME`` and
 ``guake --servers`` opens the manager.
 

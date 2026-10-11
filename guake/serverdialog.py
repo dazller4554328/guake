@@ -34,6 +34,7 @@ from guake.servers import as_saved_server
 from guake.servers import group_servers
 from guake.servers import parse_ssh_config
 from guake.serversyncdialogs import sync_servers
+from guake.vaultdialogs import manage_master_password
 from guake.tabcolors import PALETTE
 from guake.utils import HidePrevention
 
@@ -141,10 +142,14 @@ class ServerEditDialog(Gtk.Dialog):
         elif has_saved_password:
             self.password_entry.set_placeholder_text(
                 _("Saved in your keyring. Leave empty to keep it.")
+                if serversecrets.uses_keyring()
+                else _("Saved, encrypted with your master password. Leave empty to keep it.")
             )
         else:
             self.password_entry.set_placeholder_text(
                 _("Optional. Kept in your keyring, used through sshpass.")
+                if serversecrets.uses_keyring()
+                else _("Optional. Encrypted with your master password, used through sshpass.")
             )
         self._add_row(_("Password"), self.password_entry)
         if has_saved_password and serversecrets.is_available():
@@ -315,7 +320,7 @@ class ServerEditDialog(Gtk.Dialog):
         _show_message(
             self,
             Gtk.MessageType.WARNING,
-            _("The password could not be saved in your keyring."),
+            _("The password could not be saved."),
             _("You will be asked for it when connecting."),
         )
         return had_password
@@ -488,8 +493,18 @@ class ServersDialog(Gtk.Dialog):
         self.export_backup_item = self._menu_item(
             menu, _("Export backup..."), self.on_export_backup
         )
+        if getattr(self.guake, "vault", None) is not None:
+            menu.append(Gtk.SeparatorMenuItem())
+            self.master_password_item = self._menu_item(
+                menu, _("Master password..."), self.on_master_password
+            )
+            self.master_password_item.set_tooltip_text(
+                _("Ask for a password when Guake starts and encrypt your servers with it")
+            )
         menu.show_all()
-        self.more_button = Gtk.MenuButton(popup=menu, tooltip_text=_("Import and export"))
+        self.more_button = Gtk.MenuButton(
+            popup=menu, tooltip_text=_("Import, export and master password")
+        )
         self.more_button.set_image(addonstyle.image("ellipsis", Gtk.IconSize.BUTTON))
         header.pack_end(self.more_button)
 
@@ -814,6 +829,12 @@ class ServersDialog(Gtk.Dialog):
 
     def on_export_backup(self, *args):
         export_servers(self, self.store.servers, self.store.group_colors)
+
+    def on_master_password(self, *args):
+        manage_master_password(self, self.guake)
+        if hasattr(self.guake, "protect_session"):
+            self.guake.protect_session()
+        self.refresh()
 
     def on_sync(self, *args):
         if sync_servers(self, self.guake):

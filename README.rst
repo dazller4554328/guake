@@ -227,6 +227,12 @@ right and choose *Export backup...*. Tick *Include saved passwords and private k
 pick a passphrase if you want those too. On the other machine choose *Import backup...*
 and select the file. Servers with the same name are updated, new ones are added.
 
+**Protect Guake with a password**: in *Manage servers...* open the menu at the top right
+and choose *Master password...*. Guake then asks for it every time it starts, and your
+servers and their passwords are encrypted with it. *Lock Guake* in the servers menu hides
+Guake until you type it again; it also locks itself after staying hidden for a while. A
+forgotten master password cannot be recovered, so keep an exported backup.
+
 **Transfer files**: in a tab connected to a saved server press ``Ctrl+Shift+U``. The SFTP
 panel opens on the right. Drag files from your file manager onto it to upload, double-click
 a file to download it, right-click for the rest.
@@ -239,6 +245,8 @@ Where things are stored
 
 - Saved servers: ``~/.config/guake/servers.json`` (passwords are **not** in this file).
 - Passwords: your desktop keyring (GNOME Keyring, KDE Wallet, ...) via libsecret.
+- With a master password: both are in ``~/.config/guake/servers.vault`` instead, encrypted
+  (scrypt + AES-256-GCM). ``servers.json`` and the keyring entries are removed.
 - Private keys restored from a backup: where the server expects them in ``~/.ssh``, or
   ``~/.ssh/guake-imported/`` when a different key already has that name (nothing is ever
   overwritten).

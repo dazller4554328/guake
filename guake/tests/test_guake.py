@@ -6,6 +6,7 @@ import os
 import time
 
 from pathlib import Path
+from unittest import mock
 
 import gi
 import pytest
@@ -18,6 +19,9 @@ import guake.guake_app
 from guake.common import pixmapfile
 from guake.guake_app import Guake
 from guake.servers import Server
+
+
+MASTER_PASSWORD = "correct horse battery"
 
 
 @pytest.fixture
@@ -411,3 +415,178 @@ def test_sftp_session_factory_uses_saved_password(g, mocker):
     assert session.argv == ["sftp", "-P", "2200", "root@10.0.0.5"]
     assert session._password == "pw"
     assert not session.is_alive
+
+
+# Master password
+
+
+@pytest.fixture
+def locked(g):
+    """Guake with a master password set, a saved server, and locked."""
+    from guake import serversecrets
+    from guake import vault as vlt
+
+    keyring = mock.Mock()
+    keyring.lookup_password.return_value = "hunter2"
+    g.vault = vlt.Vault(g.vault.path, scrypt_n=2**14)
+    g.servers.add(Server(name="box", host="127.0.0.1", port=1, id="box1"))
+    vlt.enable(g.vault, g.servers, keyring, MASTER_PASSWORD)
+    assert g.lock()
+    yield g
+    serversecrets.use_backend(None)
+
+
+def unlocking(vault, **_kwargs):
+    vault.unlock(MASTER_PASSWORD)
+    return True
+
+
+def test_lock_hides_guake_and_forgets_the_servers(locked):
+    from guake import serversecrets
+
+    assert locked.hidden
+    assert locked.vault.is_locked
+    assert locked.servers.servers == []
+    assert locked.server_sharing_payload() is None
+    assert serversecrets.lookup_password("box1") is None
+
+
+def test_locked_guake_stays_hidden_without_the_master_password(locked, mocker):
+    ask = mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", return_value=False)
+
+    locked.show()
+
+    ask.assert_called_once()
+    assert locked.hidden
+    assert not locked.window.get_property("visible")
+
+
+def test_locked_guake_shows_again_with_the_master_password(locked, mocker):
+    from guake import serversecrets
+
+    mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", side_effect=unlocking)
+
+    locked.show()
+
+    assert not locked.hidden
+    assert [s.name for s in locked.servers.servers] == ["box"]
+    assert serversecrets.lookup_password("box1") == "hunter2"
+    assert [s["name"] for s in locked.server_sharing_payload()["servers"]] == ["box"]
+
+
+def test_second_show_while_asking_for_the_password_does_not_ask_twice(locked, mocker):
+    def reentrant(vault, **_kwargs):
+        locked.show()
+        return False
+
+    ask = mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", side_effect=reentrant)
+
+    locked.show()
+
+    ask.assert_called_once()
+
+
+@pytest.fixture
+def auto_lock_minutes(g):
+    yield lambda minutes: g.settings.general.set_int("vault-auto-lock-minutes", minutes)
+    g.settings.general.reset("vault-auto-lock-minutes")
+
+
+def test_auto_lock_is_scheduled_when_guake_hides(locked, mocker, auto_lock_minutes):
+    mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", side_effect=unlocking)
+    auto_lock_minutes(5)
+    locked.show()
+    assert not locked.auto_lock_source
+
+    locked.hide()
+
+    assert locked.auto_lock_source
+    locked.on_auto_lock()
+    assert locked.vault.is_locked
+
+
+def test_auto_lock_is_off_when_set_to_zero(locked, mocker, auto_lock_minutes):
+    mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", side_effect=unlocking)
+    auto_lock_minutes(0)
+    locked.show()
+
+    locked.hide()
+
+    assert not locked.auto_lock_source
+
+
+def test_lock_does_nothing_without_a_master_password(g):
+    assert g.lock() is False
+    assert g.ensure_unlocked()
+
+
+def test_locked_guake_asks_before_connecting_from_the_command_line(locked, mocker):
+    ask = mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", return_value=False)
+
+    assert locked.connect_to_server_by_name("box") is False
+    ask.assert_called_once()
+
+    ask.side_effect = unlocking
+    assert locked.connect_to_server_by_name("box") is True
+
+
+def test_locked_guake_does_not_open_the_server_manager(locked, mocker):
+    mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", return_value=False)
+    dialog = mocker.patch("guake.guake_app.ServersDialog")
+
+    locked.show_servers()
+
+    dialog.assert_not_called()
+
+
+def test_locked_guake_does_not_run_remote_commands(locked, mocker):
+    feed = mocker.patch("guake.terminal.GuakeTerminal.feed_child")
+
+    locked.execute_command("rm -rf /")
+    locked.execute_command_by_uuid("anything", "rm -rf /")
+
+    feed.assert_not_called()
+
+
+def test_tabs_are_saved_in_the_vault_not_in_a_plain_file(locked, mocker):
+    mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", side_effect=unlocking)
+    locked.show()
+    locked.connect_to_server(locked.servers.get("box1"))
+
+    locked.save_tabs()
+
+    assert not (locked.get_xdg_config_directory() / "session.json").exists()
+    assert "box" in json.dumps(locked.vault.get("session"))
+    assert "box" not in locked.vault.path.read_text(encoding="utf-8")
+
+
+def test_tabs_are_restored_from_the_vault(locked, mocker):
+    mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", side_effect=unlocking)
+    locked.show()
+    locked.connect_to_server(locked.servers.get("box1"))
+    locked.save_tabs()
+    nb = locked.get_notebook()
+    for _index in range(nb.get_n_pages()):
+        nb.delete_page(0)
+
+    locked.restore_tabs()
+
+    assert "box" in [nb.get_tab_text_index(i) for i in range(nb.get_n_pages())]
+
+
+def test_plain_saved_tabs_move_into_the_vault(locked, mocker):
+    mocker.patch("guake.guake_app.vaultdialogs.ask_unlock", side_effect=unlocking)
+    locked.show()
+    session_file = locked.get_xdg_config_directory() / "session.json"
+    session_file.write_text(json.dumps({"schema_version": 2, "workspace": {}}), encoding="utf-8")
+
+    locked.protect_session()
+
+    assert not session_file.exists()
+    assert locked.vault.get("session")["session.json"]["schema_version"] == 2
+
+
+def test_tabs_are_not_saved_while_locked(locked):
+    locked.save_tabs()
+
+    assert not (locked.get_xdg_config_directory() / "session.json").exists()

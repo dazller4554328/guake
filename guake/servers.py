@@ -331,26 +331,17 @@ def parse_server_entries(raw_servers) -> List[Server]:
     return servers
 
 
-def load_servers_file(path: Path) -> ServersFile:
-    """Read the servers file. A missing file yields no servers. A broken
-    file is logged and also yields no servers, so Guake keeps working."""
+def parse_servers_data(data, source="servers data") -> ServersFile:
+    """Build the servers from a decoded servers document. Anything Guake
+    cannot use is logged and yields no servers, so Guake keeps working."""
     empty = ServersFile(servers=[], deleted={}, groups={})
-    path = Path(path)
-    if not path.exists():
-        return empty
-    try:
-        with path.open(encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError) as e:
-        log.error("Cannot read servers file %s: %s", path, e)
-        return empty
     if not isinstance(data, dict) or "servers" not in data:
-        log.error("Servers file %s has an unexpected layout", path)
+        log.error("%s has an unexpected layout", source)
         return empty
     if data.get("schema_version", 0) > SERVERS_SCHEMA_VERSION:
         log.error(
-            "Servers file %s was written by a newer Guake (schema %s > %s)",
-            path,
+            "%s was written by a newer Guake (schema %s > %s)",
+            source,
             data.get("schema_version"),
             SERVERS_SCHEMA_VERSION,
         )
@@ -362,8 +353,37 @@ def load_servers_file(path: Path) -> ServersFile:
     )
 
 
+def load_servers_file(path: Path) -> ServersFile:
+    """Read the servers file. A missing file yields no servers. A broken
+    file is logged and also yields no servers, so Guake keeps working."""
+    path = Path(path)
+    if not path.exists():
+        return ServersFile(servers=[], deleted={}, groups={})
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        log.error("Cannot read servers file %s: %s", path, e)
+        return ServersFile(servers=[], deleted={}, groups={})
+    return parse_servers_data(data, f"Servers file {path}")
+
+
 def load_servers(path: Path) -> List[Server]:
     return load_servers_file(path).servers
+
+
+def servers_payload(
+    servers: Iterable[Server],
+    deleted: Optional[Dict[str, Tombstone]] = None,
+    groups: Optional[Dict[str, GroupColor]] = None,
+) -> dict:
+    """The servers document, as written to ``servers.json``."""
+    return {
+        "schema_version": SERVERS_SCHEMA_VERSION,
+        "servers": [s.to_dict() for s in sorted(servers, key=sort_key)],
+        "deleted": dump_tombstones(deleted or {}),
+        "groups": dump_group_colors(groups or {}),
+    }
 
 
 def save_servers(
@@ -375,17 +395,37 @@ def save_servers(
     """Write the servers file atomically (write to a temp file, then rename)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schema_version": SERVERS_SCHEMA_VERSION,
-        "servers": [s.to_dict() for s in sorted(servers, key=sort_key)],
-        "deleted": dump_tombstones(deleted or {}),
-        "groups": dump_group_colors(groups or {}),
-    }
+    payload = servers_payload(servers, deleted, groups)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=4)
     os.replace(tmp_path, path)
     log.info("Saved %d server(s) to %s", len(payload["servers"]), path)
+
+
+class StoreLocked(Exception):
+    """The servers are in the vault and the vault is locked."""
+
+
+class FileStorage:
+    """Keeps the servers in a plain ``servers.json``. The other storage is
+    :class:`guake.vault.VaultServers`, behind the master password."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+
+    def load(self) -> Optional[ServersFile]:
+        return load_servers_file(self.path)
+
+    def save(self, servers, deleted, groups) -> None:
+        save_servers(self.path, servers, deleted, groups)
+
+    def remove(self) -> None:
+        for path in (self.path, self.path.with_suffix(self.path.suffix + ".tmp")):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 @dataclass(frozen=True)
@@ -396,17 +436,22 @@ class MergeResult:
 
 
 class ServerStore:
-    """In-memory list of servers backed by a JSON file.
+    """In-memory list of servers backed by a JSON file, or by the vault
+    when a master password is set (``storage``).
 
     Every mutating call returns the new list and writes it to disk; the
-    stored list itself is never mutated in place.
+    stored list itself is never mutated in place. While the vault is locked
+    the store is empty and refuses changes.
     """
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, storage=None):
         self.path = Path(path)
+        self.storage = storage or FileStorage(self.path)
+        self.locked = False
         self._servers: List[Server] = []
         self._deleted: Dict[str, Tombstone] = {}
         self._groups: Dict[str, GroupColor] = {}
+        self._snapshot: Optional[ServersFile] = None
         self.reload()
 
     @property
@@ -418,11 +463,28 @@ class ServerStore:
         return dict(self._deleted)
 
     def reload(self) -> List[Server]:
-        loaded = load_servers_file(self.path)
+        loaded = self.storage.load()
+        self.locked = loaded is None
+        if loaded is None:
+            loaded = ServersFile(servers=[], deleted={}, groups={})
         self._servers = loaded.servers
         self._deleted = loaded.deleted
         self._groups = loaded.groups
+        self._snapshot = None if self.locked else loaded
         return self.servers
+
+    def snapshot(self) -> Optional[ServersFile]:
+        """Everything saved, as of the last change; None while locked. Safe
+        to call from another thread."""
+        return self._snapshot
+
+    def set_storage(self, storage) -> None:
+        """Keep the servers in ``storage`` from now on, starting with the
+        ones saved here."""
+        if self.locked:
+            raise StoreLocked("The servers are locked")
+        storage.save(self._servers, self._deleted, self._groups)
+        self.storage = storage
 
     def get(self, server_id: str) -> Optional[Server]:
         return next((s for s in self._servers if s.id == server_id), None)
@@ -557,6 +619,8 @@ class ServerStore:
         stamp: bool = True,
         groups: Optional[Dict[str, GroupColor]] = None,
     ) -> List[Server]:
+        if self.locked:
+            raise StoreLocked("The servers are locked")
         now = time.time()
         if stamp:
             servers = self._stamped(servers, now)
@@ -564,10 +628,11 @@ class ServerStore:
             self._deleted if deleted is None else deleted, (s.id for s in servers), now
         )
         groups = self._groups if groups is None else groups
-        save_servers(self.path, servers, tombstones, groups)
+        self.storage.save(servers, tombstones, groups)
         self._servers = sorted(servers, key=sort_key)
         self._deleted = tombstones
         self._groups = groups
+        self._snapshot = ServersFile(list(self._servers), dict(tombstones), dict(groups))
         return self.servers
 
 

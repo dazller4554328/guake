@@ -90,6 +90,13 @@ def test_fetch_refused_for_other_user(http_server):
         sync.fetch_peer("127.0.0.1", port)
 
 
+def test_fetch_from_locked_device_shares_nothing(http_server):
+    handler = share.make_handler(share.Authorizer(REMOTE_ME, whois=lambda ip: ME), lambda: None)
+    port = http_server(handler)
+    with pytest.raises(sync.SyncError, match="locked"):
+        sync.fetch_peer("127.0.0.1", port)
+
+
 def test_fetch_from_device_not_sharing():
     with pytest.raises(sync.SyncError, match="sharing is turned off"):
         sync.fetch_peer("127.0.0.1", 1, timeout=1)

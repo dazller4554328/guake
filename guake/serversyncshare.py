@@ -82,7 +82,7 @@ class Authorizer:
         return allowed
 
 
-def make_handler(authorizer: Authorizer, payload: Callable[[], dict]):
+def make_handler(authorizer: Authorizer, payload: Callable[[], Optional[dict]]):
     class Handler(BaseHTTPRequestHandler):
         timeout = HANDLER_TIMEOUT
         server_version = "GuakeServerSync/1"
@@ -113,8 +113,12 @@ def make_handler(authorizer: Authorizer, payload: Callable[[], dict]):
                 log.warning("Refused server sync request from %s", client)
                 self._reply(403, {"error": "forbidden"})
             else:
+                body = payload()
+                if body is None:
+                    self._reply(503, {"error": "locked"})
+                    return
                 log.info("Sharing servers with %s", client)
-                self._reply(200, payload())
+                self._reply(200, body)
 
         def _reply(self, code: int, body: dict):
             data = json.dumps(body).encode("utf-8")
@@ -159,9 +163,10 @@ class SyncSharing:
     :meth:`reconcile` on a worker thread (it calls ``tailscale`` and may
     block for seconds). ``reconcile`` also restarts the endpoint when the
     Tailscale address or user changed. ``payload`` is called on a worker
-    thread, so it should read from disk rather than from GTK state."""
+    thread, so it must not touch GTK state; it returns None when there is
+    nothing to share right now (Guake is locked)."""
 
-    def __init__(self, payload: Callable[[], dict], port: int = SYNC_PORT):
+    def __init__(self, payload: Callable[[], Optional[dict]], port: int = SYNC_PORT):
         self._payload = payload
         self.port = port
         self._lock = threading.Lock()

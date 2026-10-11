@@ -489,6 +489,8 @@ def fetch_peer(ip: str, port: int = SYNC_PORT, timeout: float = FETCH_TIMEOUT) -
             raise SyncError(_("refused: not signed in to the same Tailscale account")) from e
         if e.code == 429:
             raise SyncError(_("busy, try again in a moment")) from e
+        if e.code == 503:
+            raise SyncError(_("Guake is locked there")) from e
         raise SyncError(_("error {code}").format(code=e.code)) from e
     except (OSError, ValueError) as e:
         raise SyncError(_("Guake is not running there, or sharing is turned off")) from e

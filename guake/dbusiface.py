@@ -91,6 +91,8 @@ class DbusManager(dbus.service.Object):
 
     @dbus.service.method(DBUS_NAME, out_signature="s")
     def get_selected_tablabel(self):
+        if self.guake.vault.is_locked:
+            return ""
         return self.guake.get_notebook().get_tab_text_index(
             self.guake.get_notebook().get_current_page()
         )
@@ -160,6 +162,8 @@ class DbusManager(dbus.service.Object):
 
     @dbus.service.method(DBUS_NAME, in_signature="i", out_signature="s")
     def get_tab_name(self, tab_index=0):
+        if self.guake.vault.is_locked:
+            return ""
         return self.guake.get_notebook().get_tab_text_index(tab_index)
 
     @dbus.service.method(DBUS_NAME, in_signature="ss")
@@ -196,6 +200,8 @@ class DbusManager(dbus.service.Object):
 
     @dbus.service.method(DBUS_NAME, in_signature="i", out_signature="s")
     def get_gtktab_name(self, tab_index=0):
+        if self.guake.vault.is_locked:
+            return ""
         return self.guake.get_notebook().get_tab_text_index(tab_index)
 
     @dbus.service.method(DBUS_NAME, out_signature="s")

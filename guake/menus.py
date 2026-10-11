@@ -284,6 +284,12 @@ def mk_servers_menu(guake, action=None):
     mi = Gtk.MenuItem(_("Manage servers..."))
     mi.connect("activate", lambda *args: guake.show_servers())
     menu.add(mi)
+    vault = getattr(guake, "vault", None)
+    if vault is not None and vault.is_unlocked:
+        menu.add(Gtk.SeparatorMenuItem())
+        mi = Gtk.MenuItem(_("Lock Guake"))
+        mi.connect("activate", lambda *args: guake.lock())
+        menu.add(mi)
     menu.show_all()
     return menu
 

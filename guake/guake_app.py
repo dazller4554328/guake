@@ -23,6 +23,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time as pytime
 import traceback
@@ -84,8 +85,9 @@ from guake import serversecrets
 from guake.serverdialog import ServersDialog
 from guake.sftp import SftpSession
 from guake.sftp import build_sftp_argv
+from guake import vault as vlt
+from guake import vaultdialogs
 from guake.servers import SERVERS_FILENAME
-from guake.servers import load_servers_file
 from guake.serversync import SHARE_SETTING as SERVER_SHARING_SETTING
 from guake.serversync import build_payload
 from guake.serversyncshare import SyncSharing
@@ -97,6 +99,9 @@ from guake.servers import build_launch
 from guake.servers import parse_ssh_config
 
 log = logging.getLogger(__name__)
+
+AUTO_LOCK_SECONDS_PER_MINUTE = 60
+SESSION_FILENAME = "session.json"
 
 instance = None
 RESPONSE_FORWARD = 0
@@ -231,11 +236,27 @@ class Guake(SimpleGladeApp):
         # Saved SSH servers (Servers menu / toolbar button)
         self.servers = ServerStore(self.get_xdg_config_directory() / SERVERS_FILENAME)
 
+        # With a master password the servers and their passwords are in the
+        # vault: nothing can be read from it before the user opened it.
+        self.vault = vlt.Vault(self.get_xdg_config_directory() / vlt.VAULT_FILENAME)
+        self.unlock_pending = False
+        self.auto_lock_source = 0
+        if self.vault.exists:
+            if not vaultdialogs.ask_unlock(self.vault, quitting=True):
+                log.info("Vault not unlocked, quitting Guake")
+                sys.exit(0)
+            try:
+                vlt.attach(self.vault, self.servers)
+            except vlt.VaultError as e:
+                log.error("Cannot use the vault: %s", e)
+                self.show_server_error(_("Guake cannot read your saved servers."), str(e))
+                sys.exit(1)
+            self.schedule_auto_lock()
+
         # Lets this user's other Tailscale devices sync servers from this one.
-        # Read from disk: requests are answered on a worker thread.
-        self.server_sharing = SyncSharing(
-            lambda: build_payload(load_servers_file(self.servers.path))
-        )
+        # Requests are answered on a worker thread; nothing is shared while
+        # the vault is locked.
+        self.server_sharing = SyncSharing(self.server_sharing_payload)
         self.settings.general.onChangedValue(SERVER_SHARING_SETTING, self.update_server_sharing)
         self.update_server_sharing()
         # Tailscale may come up after Guake, or its address or user change.
@@ -514,6 +535,9 @@ class Guake(SimpleGladeApp):
         tab. Command should end with '\n', otherwise it will be
         appended to the string.
         """
+        if self.vault.is_locked:
+            log.warning("Guake is locked, command not executed")
+            return
         if not self.get_notebook().has_page():
             self.add_tab()
 
@@ -525,6 +549,9 @@ class Guake(SimpleGladeApp):
 
     def execute_command_by_uuid(self, tab_uuid, command):
         """Execute the `command' in the tab whose terminal has the `tab_uuid' uuid"""
+        if self.vault.is_locked:
+            log.warning("Guake is locked, command not executed")
+            return
         if command[-1] != "\n":
             command += "\n"
         try:
@@ -630,6 +657,8 @@ class Guake(SimpleGladeApp):
             return
 
         if not self.window.get_property("visible"):
+            if not self.ensure_unlocked():
+                return
             log.debug("Showing the terminal")
             self.show()
             server_time = get_server_time(self.window)
@@ -653,7 +682,88 @@ class Guake(SimpleGladeApp):
             return 0
         return 1
 
+    # -- master password -----------------------------------------------------
+
+    def server_sharing_payload(self):
+        if self.vault.is_locked:
+            return None
+        snapshot = self.servers.snapshot()
+        return None if snapshot is None else build_payload(snapshot)
+
+    def protect_session(self, filename=SESSION_FILENAME):
+        """Move a plain saved tab session into the vault once there is one
+        (it names the servers the tabs were connected to)."""
+        session_file = self.get_xdg_config_directory() / filename
+        if not self.vault.is_unlocked or not session_file.exists():
+            return
+        try:
+            with session_file.open(encoding="utf-8") as f:
+                config = json.load(f)
+        except (OSError, ValueError) as e:
+            log.warning("Saved tabs in %s not moved to the vault: %s", session_file, e)
+            return
+        saved = {**self.vault.get(vlt.SESSION_SECTION), filename: config}
+        self.vault.put(vlt.SESSION_SECTION, saved)
+        session_file.unlink()
+
+    def lock(self, *args):
+        """Hide Guake and close the vault: the window comes back only with
+        the master password. Returns whether Guake is locked now. Running
+        terminals stay connected."""
+        if not self.vault.is_unlocked:
+            return self.vault.is_locked
+        if not HidePrevention(self.window).may_hide():
+            return False
+        if not self.hidden:
+            self.hide()
+        self.cancel_auto_lock()
+        self.vault.lock()
+        self.servers.reload()
+        log.info("Guake is locked")
+        return True
+
+    def ensure_unlocked(self):
+        """Ask for the master password when Guake is locked. Returns
+        whether the window may be shown."""
+        if not self.vault.is_locked:
+            return True
+        if self.unlock_pending:
+            return False
+        self.unlock_pending = True
+        try:
+            unlocked = vaultdialogs.ask_unlock(self.vault)
+        finally:
+            self.unlock_pending = False
+        if unlocked:
+            self.servers.reload()
+            log.info("Guake is unlocked")
+        return unlocked
+
+    def cancel_auto_lock(self):
+        if self.auto_lock_source:
+            GLib.source_remove(self.auto_lock_source)
+            self.auto_lock_source = 0
+
+    def schedule_auto_lock(self):
+        """Lock once Guake stayed hidden for the time picked with the
+        master password (0: never)."""
+        self.cancel_auto_lock()
+        minutes = self.settings.general.get_int(vaultdialogs.AUTO_LOCK_SETTING)
+        if minutes > 0 and self.vault.is_unlocked:
+            self.auto_lock_source = GLib.timeout_add_seconds(
+                minutes * AUTO_LOCK_SECONDS_PER_MINUTE, self.on_auto_lock
+            )
+
+    def on_auto_lock(self):
+        self.auto_lock_source = 0
+        if self.hidden and not self.lock():
+            # A dialog is open: try again later.
+            self.schedule_auto_lock()
+        return False
+
     def show_focus(self, *args):
+        if not self.ensure_unlocked():
+            return
         self.win_prepare()
         self.show()
         self.set_terminal_focus()
@@ -729,6 +839,9 @@ class Guake(SimpleGladeApp):
 
     def show(self):
         """Shows the main window and grabs the focus on it."""
+        if not self.ensure_unlocked():
+            return
+        self.cancel_auto_lock()
         self.hidden = False
 
         # setting window in all desktops
@@ -808,6 +921,8 @@ class Guake(SimpleGladeApp):
         flag to False.
         """
         log.debug("show from remote")
+        if not self.ensure_unlocked():
+            return
         self.forceHide = True
         self.show()
 
@@ -818,6 +933,7 @@ class Guake(SimpleGladeApp):
         if not HidePrevention(self.window).may_hide():
             return
         self.hidden = True
+        self.schedule_auto_lock()
         self.get_widget("window-root").unstick()
         self.window.hide()  # Don't use hide_all here!
 
@@ -1434,6 +1550,8 @@ class Guake(SimpleGladeApp):
     def connect_to_server_by_name(self, name):
         """Connect to the saved server called ``name``. Returns False when
         there is no such server (used by the D-Bus / command line entry)."""
+        if not self.ensure_unlocked():
+            return False
         server = self.servers.find_by_name(name)
         if server is None:
             log.error("No saved server named %r", name)
@@ -1443,6 +1561,8 @@ class Guake(SimpleGladeApp):
 
     def show_servers(self, *args, add_new=False):
         """Open the saved servers manager dialog."""
+        if not self.ensure_unlocked():
+            return
         ServersDialog(self, add_new=add_new).present_dialog()
 
     # -- SFTP panel ------------------------------------------------------------
@@ -1673,6 +1793,15 @@ class Guake(SimpleGladeApp):
             #       So lets use list to store the tabs (as for each frame)
             config["workspace"][key] = [tabs]
 
+        if self.vault.is_locked:
+            log.info("Guake is locked, tabs not saved")
+            return
+        if self.vault.is_unlocked:
+            # Tab names and server ids: kept with the servers, not in a plain file.
+            saved = {**self.vault.get(vlt.SESSION_SECTION), filename: config}
+            self.vault.put(vlt.SESSION_SECTION, saved)
+            log.info("Guake tabs saved to the vault")
+            return
         if not self.get_xdg_config_directory().exists():
             self.get_xdg_config_directory().mkdir(parents=True)
         session_file = self.get_xdg_config_directory() / filename
@@ -1682,6 +1811,14 @@ class Guake(SimpleGladeApp):
 
     def restore_tabs(self, filename="session.json", suppress_notify=False):
         session_file = self.get_xdg_config_directory() / filename
+        if self.vault.is_unlocked:
+            self.protect_session(filename)
+            config = self.vault.get(vlt.SESSION_SECTION).get(filename)
+            if config is None:
+                log.info("No saved tabs in the vault")
+                return
+            self.restore_tabs_from(config, filename, suppress_notify)
+            return
         if not session_file.exists():
             log.info("Cannot find session.json file")
             return
@@ -1703,7 +1840,10 @@ class Guake(SimpleGladeApp):
                     img_filename,
                 )
                 return
+        self.restore_tabs_from(config, filename, suppress_notify)
 
+    def restore_tabs_from(self, config, filename, suppress_notify=False):
+        session_file = self.get_xdg_config_directory() / filename
         # Check schema_version exist
         if "schema_version" not in config:
             img_filename = pixmapfile("guake-notification.png")
@@ -1781,10 +1921,12 @@ class Guake(SimpleGladeApp):
                         nb.delete_page(0)
         except KeyError:
             log.warning("%s schema is broken", session_file)
-            shutil.copy(
-                session_file,
-                self.get_xdg_config_directory() / f"{filename}.bak",
-            )
+            # With a master password the session is in the vault, not in a file.
+            if session_file.exists():
+                shutil.copy(
+                    session_file,
+                    self.get_xdg_config_directory() / f"{filename}.bak",
+                )
             with (self.get_xdg_config_directory() / f"{filename}.log.err").open(
                 "w", encoding="utf-8"
             ) as f:

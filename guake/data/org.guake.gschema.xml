@@ -166,6 +166,12 @@
             <summary>Share saved servers with my other Tailscale devices</summary>
             <description>When true, Guake answers server sync requests on this device's Tailscale address, and only from devices signed in to the same Tailscale account. Passwords and keys are never shared.</description>
         </key>
+        <key name="vault-auto-lock-minutes" type="i">
+            <default>15</default>
+            <range min="0" max="1440"/>
+            <summary>Lock Guake after it was hidden for this many minutes</summary>
+            <description>With a master password set, Guake locks itself once its window stayed hidden this long and asks for the master password before showing again. 0 never locks it automatically.</description>
+        </key>
         <key name="start-at-login" type="b">
             <default>false</default>
             <summary>Start when GNOME starts</summary>
